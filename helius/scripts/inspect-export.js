@@ -12,6 +12,7 @@ async function inspect(directory) {
   const counts = {}, samples = new Map(), outcomes = new Map(); let lines = 0, bytes = 0, first = null, footer = null;
   const audit = { windowCounts: {}, coverageGapReasons: {}, featureReasons: {}, policies: {}, paper: { closed: 0, wins: 0, losses: 0, flat: 0, missingPnl: 0, grossPnlSol: 0 }, shadowHealth: { observations: 0, maxQueueDepth: 0, maxDroppedPerSession: 0, maxHistoryEvictionsPerSession: 0 } };
   const closes = new Set(), delays = [];
+  const comparisons = new Map(), paperResults = new Map();
   const inc = (obj, key) => { obj[key] = (obj[key] || 0) + 1; };
   const input = fs.createReadStream(file), unzip = zlib.createGunzip();
   input.on('error', e => unzip.destroy(e)); input.pipe(unzip);
@@ -26,6 +27,7 @@ async function inspect(directory) {
       if (inside) {
         inc(audit.windowCounts, `${row.dataset}:${r.type || ''}`);
         if (row.dataset === 'trading' && r.type === 'paper_sell') {
+          if (r.positionId && r.pool && Number.isFinite(r.grossPnlSol)) paperResults.set(`${r.positionId}:${r.pool}`, r.grossPnlSol);
           const key = r.positionId || `${r.mint}:${r.openedAt}`;
           if (!closes.has(key)) {
             closes.add(key); audit.paper.closed++;
@@ -49,7 +51,8 @@ async function inspect(directory) {
       if (row.dataset !== 'shadow') continue;
       if (r.type === 'sample') samples.set(r.id, r);
       if (r.type === 'outcome') outcomes.set(`${r.id}:${r.target}`, r);
-      if (samples.size > 100000 || outcomes.size > 300000) throw new Error('Inspection sample limit exceeded');
+      if (r.type === 'execution_comparison' && inside) comparisons.set(r.id, r);
+      if (samples.size > 100000 || outcomes.size > 300000 || comparisons.size > 100000) throw new Error('Inspection sample limit exceeded');
     }
   } finally { input.destroy(); unzip.destroy(); }
   if (!first || !footer || JSON.stringify(first.window) !== JSON.stringify(summary.window) || JSON.stringify(footer) !== JSON.stringify(summary.stats)) throw new Error('Manifest/summary mismatch');
@@ -90,6 +93,35 @@ async function inspect(directory) {
   delays.sort((a, b) => a - b);
   audit.proxyEntryDelayMs = { count: delays.length, p50: delays.length ? delays[Math.floor((delays.length - 1) * 0.5)] : null, p95: delays.length ? delays[Math.floor((delays.length - 1) * 0.95)] : null };
   audit.warnings = [];
+  audit.executionComparisons = {};
+  audit.paperProxyPairs = { matchedObserved: 0, paperGrossPnlSol: 0, proxyNetPnlSol: 0 };
+  for (const r of comparisons.values()) {
+    for (const name of ['baseline', 'belowMaxSell', 'avoidPriorSellPressure', 'lossCooldown', 'combined']) {
+      const key = `${r.policyId}:${r.experiments?.experimentId}:${name}`;
+      const b = audit.executionComparisons[key] ||= { candidates: 0, pass: 0, reject: 0, unknownRule: 0, observedPassed: 0, censoredPassed: 0, positivePassed: 0, netPnlSol: 0 };
+      b.candidates++;
+      const eligible = r.experiments?.[name];
+      if (eligible === false) { b.reject++; continue; }
+      if (eligible !== true) { b.unknownRule++; continue; }
+      b.pass++;
+      if (r.status !== 'observed_proxy' || !Number.isFinite(r.netPnlSol)) { b.censoredPassed++; continue; }
+      b.observedPassed++; b.positivePassed += r.label === 1 ? 1 : 0; b.netPnlSol += r.netPnlSol;
+    }
+    if (paperResults.has(r.key) && r.status === 'observed_proxy' && Number.isFinite(r.netPnlSol)) {
+      audit.paperProxyPairs.matchedObserved++;
+      audit.paperProxyPairs.paperGrossPnlSol += paperResults.get(r.key); audit.paperProxyPairs.proxyNetPnlSol += r.netPnlSol;
+    }
+  }
+  audit.migrationAge = {};
+  for (const s of samples.values()) {
+    if (!(s.at >= Date.parse(summary.window.start) && s.at < Date.parse(summary.window.endExclusive))) continue;
+    const age = s.age?.migrationAgeMs, minutes = age / 60000;
+    const bucket = !Number.isFinite(age) ? 'unknown' : minutes < 5 ? '0-5m' : minutes < 15 ? '5-15m' : minutes < 30 ? '15-30m' : minutes < 60 ? '30-60m' : minutes < 240 ? '1-4h' : '4h+';
+    const b = audit.migrationAge[`${s.policyId}:${bucket}`] ||= { candidates: 0, observed60s: 0, positive60s: 0, severeProxyDrawdown60s: 0 };
+    b.candidates++; const o = outcomes.get(`${s.id}:rebound_60s`);
+    if (o?.status === 'observed_proxy') { b.observed60s++; b.positive60s += o.label === 1 ? 1 : 0; b.severeProxyDrawdown60s += o.minNetPct <= -50 ? 1 : 0; }
+  }
+  audit.comparisonNote = 'Versioned candidate-level proxy comparisons, not independent portfolio returns; paper pairs can have different entry/exit times. AGE is time since observed Pump migration (processed, not finalized), not token creation or ordinary pool creation; >=50% proxy drawdown is not a confirmed rug.';
   if (Object.keys(audit.coverageGapReasons).length) audit.warnings.push('Coverage gaps exist; censored labels are unknown, not negative.');
   if (Object.keys(audit.featureReasons).some(k => k !== 'ready')) audit.warnings.push('Some candidates lack prior history and cannot train.');
   if (Object.keys(audit.policies).length > 1) audit.warnings.push('Multiple policies: train and evaluate separately.');

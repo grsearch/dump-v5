@@ -43,6 +43,7 @@ class ShadowClient {
     catch (_) { this.enabled = false; this.status = { status: 'worker_send_error' }; }
   }
   observe(swap, candidate, fresh) { this.enqueue({ type: 'swap', swap: { ...swap }, candidate, fresh }); }
+  poolCreated(event) { this.enqueue({ type: 'pool_created', event }); }
   connection(connected) { this.enqueue({ type: 'connection', connected, at: Date.now() }); }
   decision(swap, status, extra = {}) {
     this.enqueue({ type: 'decision', key: `${swap.signature}:${swap.pool}`, status, at: Date.now(), extra });

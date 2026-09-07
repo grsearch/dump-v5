@@ -22,7 +22,7 @@ class Engine {
     if (this.stopped || !result.signature || this.seen.has(result.signature)) return;
     this.seen.set(result.signature, Date.now()); this.ticks++;
     if (this.seen.size > 20000) this.seen.delete(this.seen.keys().next().value);
-    for (const swap of parseSwaps(result)) {
+    for (const swap of parseSwaps(result, event => this.shadowEvent('poolCreated', event))) {
       this.swaps++;
       this.shadowEvent('observe', swap, matchesBaseSignal(swap, this.c), isSignal(swap, this.c));
       const previous = this.lastSlots.get(swap.pool);
@@ -31,6 +31,8 @@ class Engine {
       if (this.lastSlots.size > 20000) this.lastSlots.delete(this.lastSlots.keys().next().value);
       const p = this.data.positions[swap.mint];
       if (p && p.pool === swap.pool) {
+        p.lastObservation = { source: 'stream', previousPrice: p.lastPrice, previousPriceAt: p.lastPriceAt,
+          eventTime: swap.eventTime, receivedAt: swap.receivedAt, handledAt: Date.now(), slot: swap.slot, signature: swap.signature };
         p.lastPrice = swap.price; p.lastPriceAt = Date.now(); p.high = Math.max(p.high, swap.price);
         // Never continue using an ancient signal slot for a later execution RPC.
         Object.assign(p, { slot: swap.slot, virtual: swap.virtual });
@@ -97,21 +99,31 @@ class Engine {
     } finally { this.busy = false; }
   }
   async sell(p, reason) {
-    if (this.stopped || this.busy || this.reconciling || this.pending() || (p.retryAfter || 0) > Date.now()) return;
+    p.exitDiagnostic ||= { version: 1, firstTriggerAt: Date.now(), reason, triggerPrice: p.lastPrice,
+      observation: p.lastObservation || { source: 'timer_or_legacy', priceAt: p.lastPriceAt },
+      blockedAttempts: 0 };
+    if (this.stopped || this.busy || this.reconciling || this.pending() || (p.retryAfter || 0) > Date.now()) { p.exitDiagnostic.blockedAttempts++; return; }
     this.busy = true;
+    const executionStartedAt = Date.now();
+    const diagnostic = { ...p.exitDiagnostic, executionStartedAt, triggerToExecutionMs: executionStartedAt - p.exitDiagnostic.firstTriggerAt };
     try {
       if (this.c.dryRun) {
         this.store.log('paper_sell', { mint: p.mint, pool: p.pool, positionId: p.signature, reason, openedAt: p.openedAt,
           heldMs: Date.now() - p.openedAt, rawAmount: p.rawAmount, entrySol: p.entrySol, entryPrice: p.entryPrice, exitPrice: p.lastPrice,
-          grossPnlSol: Number(p.rawAmount) * p.lastPrice - p.entrySol, spotPnlPct: (p.lastPrice / p.entryPrice - 1) * 100 });
+          grossPnlSol: Number(p.rawAmount) * p.lastPrice - p.entrySol, spotPnlPct: (p.lastPrice / p.entryPrice - 1) * 100,
+          accountingVersion: 'paper_spot_v1', diagnostic });
+        this.shadowEvent('decision', p, 'paper_sell', { mint: p.mint, positionId: p.signature, reason,
+          accountingVersion: 'paper_spot_v1', grossPnlSol: Number(p.rawAmount) * p.lastPrice - p.entrySol, diagnostic });
         delete this.data.positions[p.mint]; this.store.save(); return;
       }
       const built = await this.executor.buildSwap('sell', p, p.rawAmount);
       if (this.stopped) return;
-      const pending = { ...built, side: 'sell', mint: p.mint, reason, swap: p, submittedAt: Date.now() };
+      const pending = { ...built, side: 'sell', mint: p.mint, reason, swap: p, diagnostic, submittedAt: Date.now() };
       this.data.pending[pending.signature] = pending; this.store.save();
+      const sendAt = Date.now();
       await this.executor.submit(pending);
-      this.store.log('sell_submitted', { mint: p.mint, signature: pending.signature, reason });
+      this.store.log('sell_submitted', { mint: p.mint, signature: pending.signature, reason,
+        diagnostic: { ...diagnostic, sendAt, triggerToSendMs: sendAt - diagnostic.firstTriggerAt, senderAckMs: Date.now() - sendAt } });
     } catch (err) { p.retryAfter = Date.now() + 10000; throw err; }
     finally { this.busy = false; }
   }
@@ -195,11 +207,12 @@ class Engine {
       delete this.data.positions[p.mint];
     }
     delete this.data.pending[p.signature]; this.store.save();
-    this.shadowEvent('decision', p.swap, `${p.side}_confirmed`, { mode: 'live', signature: p.signature, slot: receipt.slot,
+    this.shadowEvent('decision', p.swap, `${p.side}_confirmed`, { mode: 'live', mint: p.mint, signature: p.signature, slot: receipt.slot,
       networkFeeSol: Number(receipt.meta.fee) / 1e9, ...actual });
     this.store.log(`${p.side}_confirmed`, { mint: p.mint, signature: p.signature, confirmMs: Date.now() - p.submittedAt,
       pool: p.swap?.pool, sourceSignature: p.swap?.signature, networkFeeSol: Number(receipt.meta.fee) / 1e9,
       assumedTipSol: this.c.tipLamports / 1e9, ...actual,
+      diagnostic: p.diagnostic,
       triggerSlot: p.swap?.slot, landedSlot: receipt.slot,
       slotGap: p.swap?.slot !== undefined ? receipt.slot - p.swap.slot : undefined });
   }
@@ -239,6 +252,8 @@ class Engine {
       const q = unpackAccount(keys[3 * i + 1], qInfo, TOKEN_PROGRAM_ID);
       p.virtual = require('@pump-fun/pump-swap-sdk').PUMP_AMM_SDK.decodePool(poolInfo).virtualQuoteReserves.toString();
       if (!b.amount) continue;
+      p.lastObservation = { source: 'confirmed_rpc_poll', previousPrice: p.lastPrice, previousPriceAt: p.lastPriceAt,
+        receivedAt: Date.now(), slot: response.context.slot };
       p.lastPrice = Number(q.amount + BigInt(p.virtual || '0')) / Number(b.amount) / 1e9;
       p.lastPriceAt = Date.now(); p.high = Math.max(p.high, p.lastPrice); p.slot = response.context.slot;
       const reason = exitReason(p, p.lastPrice, this.c);

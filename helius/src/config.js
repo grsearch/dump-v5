@@ -74,6 +74,8 @@ function readConfig(env = process.env) {
       feeBps: num('SHADOW_SWAP_FEE_BPS', 100, 0, 3000, true),
       slippageBps: num('SHADOW_SLIPPAGE_BPS', 100, 0, 3000, true),
       reboundPct: num('SHADOW_REBOUND_PCT', 5, 0.1, 100),
+      experimentMaxSellSol: num('SHADOW_EXPERIMENT_MAX_SELL_SOL', 40, 8, 100000),
+      experimentLossCooldownMs: num('SHADOW_EXPERIMENT_LOSS_COOLDOWN_MS', 600000, 30000, 86400000, true),
     },
   };
   if (c.shadow.entryDelayMs > c.shadow.entryDeadlineMs) throw new Error('SHADOW_ENTRY_DELAY_MS exceeds entry deadline');

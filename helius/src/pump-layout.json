@@ -1147,6 +1147,19 @@
         220,
         42
       ]
+    },
+    {
+      "name": "CreatePoolEvent",
+      "discriminator": [
+        177,
+        49,
+        12,
+        210,
+        160,
+        118,
+        167,
+        116
+      ]
     }
   ],
   "types": [
@@ -1433,6 +1446,98 @@
           {
             "name": "base_supply",
             "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CreatePoolEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "timestamp",
+            "type": "i64"
+          },
+          {
+            "name": "index",
+            "type": "u16"
+          },
+          {
+            "name": "creator",
+            "type": "pubkey"
+          },
+          {
+            "name": "base_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "quote_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "base_mint_decimals",
+            "type": "u8"
+          },
+          {
+            "name": "quote_mint_decimals",
+            "type": "u8"
+          },
+          {
+            "name": "base_amount_in",
+            "type": "u64"
+          },
+          {
+            "name": "quote_amount_in",
+            "type": "u64"
+          },
+          {
+            "name": "pool_base_amount",
+            "type": "u64"
+          },
+          {
+            "name": "pool_quote_amount",
+            "type": "u64"
+          },
+          {
+            "name": "minimum_liquidity",
+            "type": "u64"
+          },
+          {
+            "name": "initial_liquidity",
+            "type": "u64"
+          },
+          {
+            "name": "lp_token_amount_out",
+            "type": "u64"
+          },
+          {
+            "name": "pool_bump",
+            "type": "u8"
+          },
+          {
+            "name": "pool",
+            "type": "pubkey"
+          },
+          {
+            "name": "lp_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "user_base_token_account",
+            "type": "pubkey"
+          },
+          {
+            "name": "user_quote_token_account",
+            "type": "pubkey"
+          },
+          {
+            "name": "coin_creator",
+            "type": "pubkey"
+          },
+          {
+            "name": "is_mayhem_mode",
+            "type": "bool"
           }
         ]
       }

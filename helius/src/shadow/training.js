@@ -119,6 +119,7 @@ function train(rows, target, policyId) {
     trainEnd: Math.max(...split.train.map(r => r.endAt)), calibrationStart: split.calStart,
     calibrationEnd: Math.max(...split.calibration.map(r => r.endAt)), testStart: split.testStart };
   model.createdAt = new Date().toISOString(); model.labelMeaning = 'Observed-swap counterfactual proxy, not live trade success';
+  model.evaluationAfter = Math.max(...rows.map(r => r.endAt));
   const trainingMints = new Set([...split.train, ...split.calibration].map(r => r.mint));
   const unseen = split.test.map((r, i) => ({ r, p: p[i] })).filter(x => !trainingMints.has(x.r.mint));
   return { model, report: { status: passed ? 'experimental_validation_passed' : 'validation_failed', counts,

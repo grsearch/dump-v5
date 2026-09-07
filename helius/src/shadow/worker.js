@@ -20,16 +20,32 @@ function write(record) {
   if (bytes >= 1024 * 1024) flush();
 }
 const tracker = new Tracker(config, write, { runId });
+const ageFile = path.join(config.directory, 'migration-age-cache.json');
+try {
+  if (fs.statSync(ageFile).size <= 16 * 1024 * 1024) {
+    const entries = JSON.parse(fs.readFileSync(ageFile, 'utf8'));
+    if (Array.isArray(entries)) for (const e of entries.slice(-20000)) tracker.ages.created(e);
+  }
+} catch (_) { /* Missing cache means unknown age. */ }
+let ageDirty = false, lastAgeSave = 0;
+function saveAges() {
+  if (!ageDirty) return;
+  fs.writeFileSync(`${ageFile}.tmp`, JSON.stringify([...tracker.ages.pools.values()]), { mode: 0o600 });
+  fs.renameSync(`${ageFile}.tmp`, ageFile); ageDirty = false; lastAgeSave = Date.now();
+}
 function publish(status = 'running') { parentPort.postMessage({ type: 'status', value: { status, ...tracker.stats(), file: name } }); }
-const timer = setInterval(() => { tracker.tick(Date.now()); flush(); publish(); }, 1000);
+const timer = setInterval(() => { tracker.tick(Date.now()); flush(); if (Date.now() - lastAgeSave >= 60000) saveAges(); publish(); }, 1000);
 parentPort.on('message', msg => {
   if (closing) return;
   if (msg.type === 'close') {
-    closing = true; clearInterval(timer); tracker.gap('process_shutdown', msg.at); flush(); fs.closeSync(fd); publish('closed'); parentPort.close(); return;
+    closing = true; clearInterval(timer); tracker.gap('process_shutdown', msg.at); flush(); saveAges(); fs.closeSync(fd); publish('closed'); parentPort.close(); return;
   }
   if (msg.type !== 'batch') return;
   for (const event of msg.events) {
     if (event.type === 'swap') tracker.onSwap(event.swap, event.candidate, event.fresh);
+    if (event.type === 'pool_created' && tracker.ages.created(event.event)) {
+      ageDirty = true; tracker.emit({ type: 'pump_migrated', at: event.event.observedAt, ...event.event });
+    }
     if (event.type === 'connection') tracker.connection(event.connected, event.at);
     if (event.type === 'gap') { tracker.gap(event.reason, event.at); tracker.connection(true, event.at); }
     if (event.type === 'decision') tracker.decision(event.key, event.status, event.at, event.extra);

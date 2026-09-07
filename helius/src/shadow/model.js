@@ -28,12 +28,13 @@ class Model {
       this.model = m; this.status = 'experimental_calibrated_model';
     } catch (_) { this.status = 'invalid_or_incompatible_model'; }
   }
-  predict(snapshot) {
+  predict(snapshot, at = Date.now()) {
     const base = { modelId: this.id, target: this.model?.target || null, probability: null, shadowOnly: true,
       scope: 'observed_swap_proxy_conditional_on_coverage' };
     if (!snapshot.ready) return { ...base, status: 'insufficient_prior_history' };
     if (!this.model) return { ...base, status: this.status };
     const m = this.model;
+    if (Number.isFinite(m.evaluationAfter) && at <= m.evaluationAfter) return { ...base, status: 'before_forward_evaluation_window' };
     if (m.features.some((name, i) => !Number.isFinite(snapshot.values[name]) || Math.abs((snapshot.values[name] - m.means[i]) / m.scales[i]) > 8)) {
       return { ...base, status: 'out_of_training_range' };
     }

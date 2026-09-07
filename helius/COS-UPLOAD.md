@@ -114,3 +114,5 @@ node helius/scripts/export-recent.js --hours 1
 默认最近 1 小时，允许大于 0、最多 24 小时。输出路径会打印到终端，位于 helius/data/exports/manual-时间-唯一标识/，包含 analysis.jsonl.gz、summary.json、quality.json。仅读取本地日志，不请求 Helius 或 COS，不推进日报游标，不覆盖已冻结的 07:00 归档；每次独立生成。需要下载这整个目录。日常 COS 上传仍由原定时器执行，更新代码即可在下一次上传附带 quality.json，无须重启交易进程。
 
 质量报告的 windowCandidateCohort 按窗口内候选分母统计，区分已观察、覆盖中断和导出时尚无结果；窗口内结果可能对应更早候选，两者数量不必相等。训练 eligible 只计窗口内触发且具备历史与成熟标签的候选，跨窗上下文保留用于关联。模拟毛盈亏不包含费用、冲击和执行延迟；proxyEntryDelayMs 是观察模型的延迟，不是实盘成交测速。健康日志是采样记录，零丢弃不能证明全程完整覆盖。
+
+新版归档包含 execution_comparison、pump_migrated 和 sample.age，quality.json 增加候选规则对照及迁移 AGE分组；详见 [观察与年龄说明](OBSERVATION.md)。

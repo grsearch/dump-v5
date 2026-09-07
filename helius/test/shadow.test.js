@@ -133,6 +133,7 @@ test('offline logistic calibration and holdout evaluation produce a loadable exp
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shadow-model-')), file = path.join(dir, 'model.json');
   fs.writeFileSync(file, JSON.stringify(result.model));
   const m = new Model(file, 'policy');
+  assert.equal(m.predict({ ready: true, values: rows[1].values }, result.model.evaluationAfter).status, 'before_forward_evaluation_window');
   assert.ok(m.predict({ ready: true, values: rows[1].values }).probability > 0.5);
   assert.equal(m.predict({ ready: false }).probability, null);
   assert.equal(new Model(file, 'other_policy').predict({ ready: true }).probability, null);
@@ -200,4 +201,44 @@ test('real worker writes samples asynchronously and marks shutdown observations 
   const rows = fs.readFileSync(path.join(dir, files[0]), 'utf8').trim().split('\n').map(JSON.parse);
   assert.ok(rows.some(r => r.type === 'sample'));
   assert.equal(rows.filter(r => r.type === 'outcome').length, 3);
+});
+
+test('candidate experiments use prior history and loss cooldown never silently passes after a gap', () => {
+  const { Experiments } = require('../src/shadow/experiments');
+  const e = new Experiments({}, 0), s = { mint: 'm', sellSol: 50 };
+  const history = { ready: true, values: { consecutiveSells: 4, sellSol15: 20, buySol15: 1 } };
+  const first = e.evaluate(s, history, 1000);
+  assert.equal(first.belowMaxSell, false); assert.equal(first.avoidPriorSellPressure, false); assert.equal(first.lossCooldown, null);
+  e.closed('m', 600000, -1);
+  assert.equal(e.evaluate(s, history, 600001).lossCooldown, false);
+  assert.equal(e.evaluate(s, history, 1200000).lossCooldown, true);
+  assert.equal(first.lossCooldown, null); // Earlier decision never changes from later information.
+  e.reset(1200000); assert.equal(e.evaluate(s, history, 1200001).lossCooldown, null);
+});
+
+test('pool age is not token age, rejects future and conflicting creation evidence', () => {
+  const { Age } = require('../src/shadow/age'); const a = new Age();
+  const s = { pool: 'p', mint: 'm' };
+  assert.equal(a.snapshot(s, 10000).migrationAgeMs, null);
+  a.created({ ...s, createdAt: 1000, observedAt: 2000, signature: 'sig', source: 'pump_migrate_processed', migrationAt: 1000 });
+  assert.equal(a.snapshot(s, 10000).migrationAgeMs, 9000);
+  assert.equal(a.snapshot(s, 10000).tokenAgeMs, null);
+  assert.equal(a.snapshot(s, 10000).tokenAgeMs, null);
+  assert.equal(a.snapshot(s, 1500).migrationAgeMs, null);
+  a.created({ ...s, createdAt: 1100, migrationAt: 1100, source: 'pump_migrate_processed', observedAt: 2000 });
+  assert.equal(a.snapshot(s, 10000).migrationAgeMs, null);
+});
+
+test('execution comparison preserves delayed cost model, filter versions and unknown results', () => {
+  const { tracker, records } = collector({ networkFeeSol: 0.001, feeBps: 100, slippageBps: 100 });
+  warm(tracker); tracker.onSwap(swap(60000, { side: 'sell', sellSol: 50 }), true, true);
+  tracker.onSwap(swap(60600), false, false);
+  tracker.onSwap(swap(61000, { postQuote: '50000000000' }), false, false);
+  tracker.onSwap(swap(61600, { postQuote: '40000000000' }), false, false);
+  const cmp = records.find(r => r.type === 'execution_comparison');
+  assert.equal(cmp.status, 'observed_proxy'); assert.equal(cmp.experiments.belowMaxSell, false);
+  assert.equal(cmp.netPnlSol, cmp.exitProceedsSol - cmp.entryCostSol);
+  assert.equal(cmp.actualExitDelayMs, 600); assert.equal(cmp.comparisonVersion, 1);
+  const other = collector(); other.tracker.onSwap(swap(60000), true, true); other.tracker.gap('disconnect', 61000);
+  assert.equal(other.records.find(r => r.type === 'execution_comparison').label, null);
 });

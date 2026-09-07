@@ -3,6 +3,8 @@ const crypto = require('node:crypto');
 const { Features } = require('./features');
 const { Model } = require('./model');
 const { exitReason } = require('../strategy');
+const { Experiments } = require('./experiments');
+const { Age } = require('./age');
 
 function assumptions(c) {
   return { version: 1, sizeSol: c.sizeSol, takeProfit: c.takeProfit, stopLoss: c.stopLoss, trailArm: c.trailArm,
@@ -29,6 +31,8 @@ class Tracker {
     this.c = c; this.write = write; this.runId = runId; this.now = now;
     this.policy = assumptions(c); this.policyId = policyId(this.policy);
     this.features = new Features(c); this.model = new Model(c.modelFile, this.policyId);
+    this.experiments = new Experiments(c, this.now());
+    this.ages = new Age();
     this.active = new Map(); this.byPool = new Map(); this.lastOrder = new Map(); this.seen = new Map();
     this.sequence = 0; this.connected = false; this.lastGlobalAt = 0; this.samples = 0; this.outcomes = 0; this.censored = 0;
     this.write({ type: 'session', schema: 1, runId, at: this.now(), policy: this.policy, policyId: this.policyId,
@@ -41,7 +45,7 @@ class Tracker {
   }
   gap(reason, at = this.now()) {
     for (const sample of [...this.active.values()]) this.finishIncomplete(sample, reason, at);
-    this.features.reset(); this.lastOrder.clear(); this.connected = false;
+    this.features.reset(); this.lastOrder.clear(); this.connected = false; this.experiments.reset(at);
     this.emit({ type: 'coverage_gap', reason, at });
   }
   onSwap(s, candidate, fresh, at = s.receivedAt) {
@@ -77,12 +81,13 @@ class Tracker {
     if (candidate) {
       const id = `${this.runId}:${key}`, snapshot = this.features.snapshot(s, at);
       const sample = { id, key, at, source: { signature: s.signature, pool: s.pool, mint: s.mint, slot: s.slot },
-        features: snapshot, prediction: this.model.predict(snapshot), lastAt: at, last: s, entry: null,
+        features: snapshot, prediction: this.model.predict(snapshot, at), experiments: this.experiments.evaluate(s, snapshot, at), lastAt: at, last: s, entry: null,
         horizons: { rebound_30s: { ms: 30000, hit: false, maxNetPct: null, minNetPct: null },
           rebound_60s: { ms: 60000, hit: false, maxNetPct: null, minNetPct: null } }, strategyDone: false, exitPending: null };
       this.samples++;
       this.emit({ type: 'sample', id, key, at, source: sample.source, sequence: this.sequence,
-        features: snapshot, prediction: sample.prediction, decisionFresh: fresh, policy: this.policy });
+        features: snapshot, prediction: sample.prediction, experiments: sample.experiments,
+        age: this.ages.snapshot(s, at), decisionFresh: fresh, policy: this.policy });
       if (!fresh || !this.connected) this.finishIncomplete(sample, !fresh ? 'stale_candidate' : 'stream_not_continuous', at);
       else if (this.active.size >= this.c.maxActive) this.finishIncomplete(sample, 'active_capacity', at);
       else if ((this.byPool.get(s.pool)?.size || 0) >= this.c.maxActivePerPool) this.finishIncomplete(sample, 'pool_active_capacity', at);
@@ -97,6 +102,9 @@ class Tracker {
   label(sample, target, fields, at) {
     this.outcomes++; if (fields.status === 'censored') this.censored++;
     this.emit({ type: 'outcome', id: sample.id, key: sample.key, target, at, ...fields });
+    if (target === 'strategy_proxy') this.emit({ type: 'execution_comparison', comparisonVersion: 1,
+      id: sample.id, key: sample.key, at, experiments: sample.experiments, prediction: sample.prediction,
+      executionPolicy: this.policy, ...fields });
   }
   finishIncomplete(sample, reason, at) {
     for (const [name, h] of Object.entries(sample.horizons)) {
@@ -142,12 +150,15 @@ class Tracker {
       if (sample.exitPending && at >= sample.exitPending.dueAt) {
         sample.strategyDone = true;
         this.label(sample, 'strategy_proxy', { status: 'observed_proxy', label: pnl > 0 ? 1 : 0, netPnlPct: pnl,
+          netPnlSol: net - sample.entry.cost, entryCostSol: sample.entry.cost, exitProceedsSol: net,
           entryAt: sample.entry.at, exitAt: at, reason: sample.exitPending.reason,
+          triggerAt: sample.exitPending.triggerAt, triggerPrice: sample.exitPending.price ?? null,
+          exitObservationPrice: s.price, exitObservationSlot: s.slot,
           actualExitDelayMs: at - sample.exitPending.triggerAt }, at);
       } else if (!sample.exitPending) {
         sample.entry.high = Math.max(sample.entry.high, s.price);
         const reason = exitReason(sample.entry, s.price, this.c, at);
-        if (reason) sample.exitPending = { reason, triggerAt: at, dueAt: at + this.c.exitDelayMs };
+        if (reason) sample.exitPending = { reason, triggerAt: at, price: s.price, dueAt: at + this.c.exitDelayMs };
       }
     }
     sample.last = s; sample.lastAt = at;
@@ -162,7 +173,10 @@ class Tracker {
       }
     }
   }
-  decision(key, status, at, extra = {}) { this.emit({ type: 'decision', key, status, at, ...extra }); }
+  decision(key, status, at, extra = {}) {
+    if (status === 'paper_sell' || status === 'sell_confirmed') this.experiments.closed(extra.mint, at, extra.netPnlSol ?? extra.grossPnlSol);
+    this.emit({ type: 'decision', key, status, at, ...extra });
+  }
   stats() { return { samples: this.samples, outcomes: this.outcomes, censored: this.censored, active: this.active.size,
     historyPools: this.features.pools.size, historyEvents: this.features.total, historyEvictions: this.features.evictions, model: this.model.status }; }
 }

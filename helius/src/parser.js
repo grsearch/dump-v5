@@ -2,6 +2,7 @@
 const { VersionedTransaction } = require('@solana/web3.js');
 const bs58 = require('bs58').default;
 const layout = require('./pump-layout.json');
+const migrationLayout = require('./migration-layout.json');
 const { PUMP, WSOL } = require('./config');
 const CPI_TAG = Buffer.from([228, 69, 165, 46, 81, 203, 154, 29]);
 
@@ -29,10 +30,10 @@ function normalize(result) {
   })) };
 }
 
-function decodeEvent(data) {
-  const event = layout.events.find(e => data.subarray(0, 8).equals(Buffer.from(e.discriminator)));
+function decodeEvent(data, schema = layout) {
+  const event = schema.events.find(e => data.subarray(0, 8).equals(Buffer.from(e.discriminator)));
   if (!event) return null;
-  const fields = layout.types.find(t => t.name === event.name).type.fields;
+  const fields = schema.types.find(t => t.name === event.name).type.fields;
   let offset = 8;
   const out = { name: event.name };
   for (const { name, type } of fields) {
@@ -53,14 +54,34 @@ function decodeEvent(data) {
       offset += len;
     }
   }
+  if (out.name === 'CreatePoolEvent') return out.pool && out.base_mint && out.quote_mint && out.timestamp !== undefined ? out : null;
+  if (out.name === 'CompletePumpAmmMigrationEvent') return out.pool && out.mint && out.timestamp !== undefined ? out : null;
   return out.pool && out.user && (out.user_quote_amount_out !== undefined || out.user_quote_amount_in !== undefined) ? out : null;
 }
 
-function parseSwaps(result) {
+function parseSwaps(result, onPoolCreated) {
   const tx = normalize(result);
   if (!tx) return [];
+  if (onPoolCreated) {
+    const spec = migrationLayout.instructions[0], index = name => spec.accounts.findIndex(a => a.name === name);
+    const migrations = tx.instructions.filter(i => i.program === migrationLayout.address && i.data.subarray(0, 8).equals(Buffer.from(spec.discriminator)));
+    for (const ix of tx.instructions) {
+      if (ix.program !== migrationLayout.address || !ix.data.subarray(0, 8).equals(CPI_TAG)) continue;
+      const e = decodeEvent(ix.data.subarray(8), migrationLayout);
+      if (!e || (e.quote_mint && e.quote_mint !== WSOL)) continue;
+      if (!migrations.some(m => m.accounts[index('mint')] === e.mint && m.accounts[index('pool')] === e.pool
+        && m.accounts[index('pump_amm')] === PUMP && m.accounts[index('wsol_mint')] === WSOL)) continue;
+      onPoolCreated({ pool: e.pool, mint: e.mint, createdAt: Number(e.timestamp) * 1000, migrationAt: Number(e.timestamp) * 1000,
+        observedAt: result.receivedAt || Date.now(), signature: result.signature, slot: result.slot, source: 'pump_migrate_processed' });
+    }
+  }
   const events = tx.instructions.filter(i => i.program === PUMP && i.data.subarray(0, 8).equals(CPI_TAG))
     .map(i => decodeEvent(i.data.subarray(8))).filter(Boolean);
+  for (const e of events) if (e.name === 'CreatePoolEvent' && e.quote_mint === WSOL && e.base_mint !== WSOL) {
+    onPoolCreated?.({ pool: e.pool, mint: e.base_mint, createdAt: Number(e.timestamp) * 1000,
+      observedAt: result.receivedAt || Date.now(), signature: result.signature, slot: result.slot,
+      source: 'pumpswap_create_pool_processed' });
+  }
   // Use authenticated PumpSwap CPI events, never arbitrary "Program data" logs.
   const swaps = tx.instructions.filter(i => i.program === PUMP).map(ix => {
     const spec = layout.instructions.find(s => ix.data.subarray(0, 8).equals(Buffer.from(s.discriminator)));

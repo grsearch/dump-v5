@@ -144,3 +144,18 @@ test('quality separates censored and pending labels from negative outcomes and c
   assert.equal(q.audit.featureReasons.insufficient_prior_history, 1);
   assert.equal(q.audit.coverageGapReasons.stream_disconnected, 1);
 });
+
+test('quality groups provisional pool ages and comparison exclusions without calling crashes rugs', async t => {
+  const f = fixture(t), at=f.end-100000;
+  write(path.join(f.env.SHADOW_DIRECTORY,'samples-age.jsonl'),[
+    {type:'sample',id:'one',at,policyId:'p',age:{migrationAgeMs:1000}},
+    {type:'outcome',id:'one',at:at+60000,target:'rebound_60s',status:'observed_proxy',label:0,minNetPct:-70},
+    {type:'execution_comparison',id:'one',key:'key',at:at+60000,policyId:'p',status:'observed_proxy',label:0,netPnlSol:-.7,experiments:{experimentId:'e',baseline:true,belowMaxSell:false,avoidPriorSellPressure:null,lossCooldown:true,combined:false}}
+  ]);
+  const a=await buildArchive({c:f.c,outputDir:f.env.COS_EXPORT_DIRECTORY,end:f.end});
+  const q=await require('../scripts/inspect-export').inspect(a.folder);
+  assert.equal(q.audit.migrationAge['p:0-5m'].severeProxyDrawdown60s,1);
+  assert.equal(q.audit.executionComparisons['p:e:baseline'].netPnlSol,-.7);
+  assert.equal(q.audit.executionComparisons['p:e:belowMaxSell'].reject,1);
+  assert.equal(q.audit.executionComparisons['p:e:avoidPriorSellPressure'].unknownRule,1);
+});

@@ -125,3 +125,14 @@ test('processed failure stays pending until confirmed, avoiding rollback retries
   await engine.reconcile(); assert.ok(store.data.pending.sig);
   confirmationStatus = 'confirmed'; await engine.reconcile(); assert.equal(store.data.pending.sig, undefined);
 });
+
+test('sell diagnostics preserve the first trigger across wallet contention and emit paper comparison key', async () => {
+  const { engine, store } = setup(); const logs=[],events=[];
+  store.log=(type,r)=>logs.push({type,...r}); engine.shadow={decision:(...args)=>events.push(args)};
+  const s=parseSwaps(fixture())[0]; await engine.buy(s); const p=store.data.positions[s.mint];
+  engine.busy=true; await engine.sell(p,'stop_loss'); const first=p.exitDiagnostic.firstTriggerAt;
+  engine.busy=false; await engine.sell(p,'stop_loss');
+  const sold=logs.find(r=>r.type==='paper_sell');
+  assert.equal(sold.diagnostic.firstTriggerAt,first); assert.equal(sold.diagnostic.blockedAttempts,1);
+  assert.equal(sold.accountingVersion,'paper_spot_v1'); assert.ok(events.some(x=>x[1]==='paper_sell'&&x[2].positionId===s.signature));
+});
