@@ -37,7 +37,7 @@ function readConfig(env = process.env) {
     minImpact: num('MIN_PRICE_IMPACT_PCT', 10, 0, 99),
     maxImpact: num('MAX_PRICE_IMPACT_PCT', 30, 0, 99),
     minLiquidity: num('MIN_POOL_QUOTE_SOL', 30, 0, 1e9),
-    sizeSol: num('POSITION_SIZE_SOL', 0.1, 0.000001, 1000),
+    sizeSol: num('POSITION_SIZE_SOL', 1, 0.000001, 1000),
     maxPositions: num('MAX_CONCURRENT_POSITIONS', 20, 1, 30, true),
     cooldownMs: num('COOLDOWN_MS', 30000, 0, 86400000, true),
     maxSignalAgeMs: num('MAX_SIGNAL_AGE_MS', 2500, 250, 10000, true),

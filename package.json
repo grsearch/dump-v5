@@ -8,7 +8,8 @@
     "setup": "npm ci --prefix helius",
     "start": "node helius/src/index.js",
     "test": "node --test helius/test/*.test.js",
-    "benchmark": "node helius/scripts/benchmark.js"
+    "benchmark": "node helius/scripts/benchmark.js",
+    "dashboard": "node helius/scripts/dashboard.js"
   },
   "engines": { "node": ">=22" }
 }

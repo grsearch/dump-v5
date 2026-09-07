@@ -37,9 +37,14 @@ sed -e "s|/opt/dump-sniper|$INSTALL_DIR|g" \
   -e "s|^ExecStart=/usr/bin/node |ExecStart=$NODE_BIN |" \
   "$INSTALL_DIR/deploy/dump-sniper-upload.service" > /etc/systemd/system/dump-sniper-upload.service
 cp "$INSTALL_DIR/deploy/dump-sniper-upload.timer" /etc/systemd/system/dump-sniper-upload.timer
+sed -e "s|/opt/dump-sniper|$INSTALL_DIR|g" \
+  -e "s|^User=ubuntu|User=$SERVICE_USER|" -e "s|^Group=ubuntu|Group=$SERVICE_USER|" \
+  -e "s|^ExecStart=/usr/bin/node |ExecStart=$NODE_BIN |" \
+  "$INSTALL_DIR/deploy/dump-sniper-dashboard.service" > /etc/systemd/system/dump-sniper-dashboard.service
 systemctl daemon-reload
 echo "Installed. Configure $INSTALL_DIR/helius/.env; DRY_RUN=true is the default."
 echo 'Fresh installation: state files are created automatically on first start.'
 echo 'When ready: sudo systemctl enable --now dump-sniper'
 echo 'Logs: journalctl -u dump-sniper -f'
+echo 'Dashboard: sudo systemctl enable --now dump-sniper-dashboard.service (127.0.0.1:8787)'
 echo "Daily COS: fill $INSTALL_DIR/helius/.cos.env, then sudo systemctl enable --now dump-sniper-upload.timer"

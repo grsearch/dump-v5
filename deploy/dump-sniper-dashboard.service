@@ -1,0 +1,22 @@
+[Unit]
+Description=PumpSwap read-only dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/dump-sniper/helius
+ExecStart=/usr/bin/node /opt/dump-sniper/helius/scripts/dashboard.js
+Restart=on-failure
+RestartSec=10
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+PrivateTmp=true
+Nice=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
