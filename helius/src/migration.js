@@ -39,11 +39,22 @@ function migrations(tx, decode, emit, diagnostic = () => {}) {
     diagnostic({ stage: `completion_events_${transport}`, count: 1 });
     const e = decode(bytes, schema);
     if (!e) { diagnostic({ stage: 'completion_decode_failed', count: 1, signature: tx.signature }); continue; }
-    const matched = (!e.quote_mint || e.quote_mint === WSOL) && specs.some(({ ix, spec }) => {
+    const comparisons = specs.map(({ ix, spec }) => {
       const account = name => ix.accounts[spec.accounts.findIndex(a => a.name === name)];
-      return account('mint') === e.mint && account('pool') === e.pool && account('pump_amm') === PUMP && account('wsol_mint') === WSOL;
+      const mint = account(spec.name === 'migrate_v2' ? 'base_mint' : 'mint');
+      const quote = account(spec.name === 'migrate_v2' ? 'quote_mint' : 'wsol_mint');
+      const checks = { mint: mint === e.mint, pool: account('pool') === e.pool,
+        pumpAmm: account('pump_amm') === PUMP, quote: quote === WSOL,
+        eventQuote: !e.quote_mint || e.quote_mint === WSOL };
+      return { instruction: spec.name, accountCount: ix.accounts.length, mint, pool: account('pool'),
+        pumpAmm: account('pump_amm'), quote, checks, matched: Object.values(checks).every(Boolean) };
     });
-    if (!matched) { diagnostic({ stage: 'completion_account_mismatch', count: 1, signature: tx.signature }); continue; }
+    if (!comparisons.some(c => c.matched)) {
+      diagnostic({ stage: 'completion_account_mismatch', count: 1, signature: tx.signature,
+        transport, eventBytes: bytes.length,
+        event: { mint: e.mint, pool: e.pool, quote: e.quote_mint ?? null, timestamp: String(e.timestamp) },
+        comparisons: comparisons.slice(0, 4) }); continue;
+    }
     const key = `${e.pool}:${e.mint}:${e.timestamp}`;
     if (seen.has(key)) continue; seen.add(key); accepted++;
     emit({ pool: e.pool, mint: e.mint, createdAt: Number(e.timestamp) * 1000, migrationAt: Number(e.timestamp) * 1000,
