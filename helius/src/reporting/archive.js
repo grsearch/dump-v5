@@ -59,11 +59,12 @@ async function* records(source, stats) {
   if (tail && stats) stats.partialLines++;
 }
 function timeOf(r) { return typeof r.at === 'number' ? r.at : Date.parse(r.time); }
-async function buildArchive({ c, outputDir, end, secrets = [], now = Date.now(), previousSources }) {
-  const start = end - DAY, folder = path.join(outputDir, dayName(end));
+async function buildArchive({ c, outputDir, end, start = end - DAY, manual = false, secrets = [], now = Date.now(), previousSources }) {
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start >= end || (!manual && start !== end - DAY)) throw new Error('Invalid archive window');
+  const folder = path.join(outputDir, manual ? `manual-${new Date(end).toISOString().replace(/[:.]/g, '-')}-${crypto.randomUUID()}` : dayName(end));
   await fsp.mkdir(folder, { recursive: true, mode: 0o700 });
   const sources = [];
-  const files = [...new Set([`${c.stateFile}.jsonl`, path.join(path.dirname(c.stateFile), 'paper.json.jsonl'), path.join(path.dirname(c.stateFile), 'live.json.jsonl')])];
+  const files = [...new Set([`${c.stateFile}.jsonl`, path.join(path.dirname(c.stateFile), 'paper.json.jsonl'), path.join(path.dirname(c.stateFile), 'live.json.jsonl')].map(f => path.resolve(f)))];
   const shadows = await fsp.readdir(c.shadow.directory).catch(e => { if (e.code === 'ENOENT') return []; throw e; });
   files.push(...shadows.filter(n => /^samples-.*\.jsonl$/.test(n)).map(n => path.join(c.shadow.directory, n)));
   for (const file of files) {
@@ -83,7 +84,7 @@ async function buildArchive({ c, outputDir, end, secrets = [], now = Date.now(),
       for (const k of [r.buySignature, r.signal, r.sourceSignature, r.positionId, r.signature, r.key]) if (k) tradeKeys.add(k);
     }
   }
-  const manifest = { schema: 1, kind: 'daily_analysis_archive', timezone: 'Asia/Shanghai', window: { start: new Date(start).toISOString(), endExclusive: new Date(end).toISOString(), beijingDate: dayName(end) },
+  const manifest = { schema: 1, kind: manual ? 'manual_analysis_archive' : 'daily_analysis_archive', timezone: 'Asia/Shanghai', window: { start: new Date(start).toISOString(), endExclusive: new Date(end).toISOString(), beijingDate: dayName(end) },
     snapshotAt: new Date(now).toISOString(), sources: sources.map(({ id, name, size, dataset }) => ({ id, name, size, dataset })), sourceChanges,
     scope: 'All available local trading and shadow records in window plus linked earlier context; not all raw chain transactions',
     analysisChecklist: ['Separate paper results, confirmed live fills and shadow proxy labels.',
@@ -109,7 +110,7 @@ async function buildArchive({ c, outputDir, end, secrets = [], now = Date.now(),
       } else stats.contextRecords++;
       yield JSON.stringify({ dataset: source.dataset, source: source.name, sourceId: source.id, line, context: !inside, record: scrub(r, secrets) }) + '\n';
     }
-    const stateFiles = [...new Set([c.stateFile, path.join(path.dirname(c.stateFile), 'paper.json'), path.join(path.dirname(c.stateFile), 'live.json')])];
+    const stateFiles = [...new Set([c.stateFile, path.join(path.dirname(c.stateFile), 'paper.json'), path.join(path.dirname(c.stateFile), 'live.json')].map(f => path.resolve(f)))];
     for (const file of stateFiles) {
       try { const data = JSON.parse(await fsp.readFile(file, 'utf8')); yield JSON.stringify({ dataset: 'state_snapshot', source: path.basename(file), record: scrub(publicState(data), secrets) }) + '\n'; }
       catch (e) { if (e.code !== 'ENOENT') throw new Error('Could not read consistent state snapshot'); }

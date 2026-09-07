@@ -89,9 +89,9 @@ test('failed upload retains window and retries identical artifact before advanci
   const cursor = path.join(f.env.COS_EXPORT_DIRECTORY, 'upload-state.json');
   assert.equal(JSON.parse(fs.readFileSync(cursor)).nextEnd, f.end);
   const result = await run({ env: f.env, now: f.end + 10000, client });
-  assert.equal(result.status, 'uploaded'); assert.equal(client.calls.length, 2);
+  assert.equal(result.status, 'uploaded'); assert.equal(client.calls.length, 3);
   const again = await run({ env: f.env, now: f.end + 20000, client });
-  assert.equal(again.status, 'up_to_date'); assert.equal(client.calls.length, 2);
+  assert.equal(again.status, 'up_to_date'); assert.equal(client.calls.length, 3);
   const recovered = await run({ env: f.env, now: f.end + 3 * DAY + 5000, client });
   assert.equal(recovered.uploaded.length, 3);
 });
@@ -109,4 +109,38 @@ test('destination changes and corrupt frozen archives cannot silently advance th
   fs.appendFileSync(path.join(f.env.COS_EXPORT_DIRECTORY, dayName(f.end), 'analysis.jsonl.gz'), 'bad');
   await assert.rejects(run({ env: f.env, now: f.end + 1000, client }), /integrity/);
   await assert.rejects(run({ env: { ...f.env, COS_INSTANCE_ID: 'different' }, now: f.end + 1000, client }), /cursor/);
+});
+
+test('recent export uses rolling hour, preserves earlier buy context, and never alters daily cursor', async t => {
+  const f = fixture(t), now = f.end + 12345;
+  write(`${f.c.stateFile}.jsonl`, [
+    { time: new Date(now - 3600001).toISOString(), type: 'paper_buy', positionId: 'old' },
+    { time: new Date(now - 1).toISOString(), type: 'paper_sell', positionId: 'old', grossPnlSol: -0.2 },
+    { time: new Date(now).toISOString(), type: 'outside' }]);
+  const recent = require('../scripts/export-recent');
+  const result = await recent.run({ env: f.env, now });
+  const rows = unpack(path.join(result.folder, 'analysis.jsonl.gz'));
+  assert.equal(Date.parse(result.window.start), now - 3600000);
+  assert.equal(result.quality.audit.paper.grossPnlSol, -0.2);
+  assert.equal(result.quality.audit.windowCounts['trading:paper_sell'], 1);
+  assert.ok(rows.some(x => x.context && x.record.positionId === 'old'));
+  assert.ok(!rows.some(x => x.record.type === 'outside'));
+  assert.ok(!fs.existsSync(path.join(f.env.COS_EXPORT_DIRECTORY, 'upload-state.json')));
+  const second = await recent.run({ env: f.env, now });
+  assert.notEqual(result.folder, second.folder);
+  await assert.rejects(recent.run({ env: f.env, hours: 0 }), /Hours/);
+});
+
+test('quality separates censored and pending labels from negative outcomes and checks gross paper PnL', async t => {
+  const f = fixture(t), at = f.end - 100000;
+  write(path.join(f.env.SHADOW_DIRECTORY, 'samples-quality.jsonl'), [
+    { type: 'sample', id: 'one', at, features: { ready: false, reason: 'insufficient_prior_history' } },
+    { type: 'sample', id: 'two', at },
+    { type: 'outcome', id: 'one', at: at + 2000, target: 'rebound_60s', status: 'censored', label: null, reason: 'pool_observation_gap' },
+    { type: 'coverage_gap', at, reason: 'stream_disconnected' }]);
+  const a = await buildArchive({ c: f.c, outputDir: f.env.COS_EXPORT_DIRECTORY, end: f.end });
+  const q = await require('../scripts/inspect-export').inspect(a.folder);
+  assert.deepEqual(q.targets.rebound_60s.windowCandidateCohort, { samples: 2, observed: 0, positive: 0, negative: 0, censored: 1, missingAtExport: 1, censorReasons: { pool_observation_gap: 1 } });
+  assert.equal(q.audit.featureReasons.insufficient_prior_history, 1);
+  assert.equal(q.audit.coverageGapReasons.stream_disconnected, 1);
 });

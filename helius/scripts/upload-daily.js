@@ -50,11 +50,14 @@ async function run({ env = process.env, now = Date.now(), localOnly = false, cli
         const secrets = Object.entries(env).filter(([k]) => /SECRET|PRIVATE|API_KEY|SECURITY_TOKEN|PASSWORD/.test(k)).map(([, v]) => v).filter(v => typeof v === 'string');
         bundle = await buildArchive({ c, outputDir: rc.outputDir, end, secrets, now, previousSources: state.sources });
       }
-      if (localOnly) return { status: 'local_export_only', file, stats: bundle.summary.stats };
+      const qualityFile = path.join(folder, 'quality.json');
+      await atomicJSON(qualityFile, await require('./inspect-export').inspect(folder));
+      if (localOnly) return { status: 'local_export_only', file, qualityFile, stats: bundle.summary.stats };
       const key = `${rc.prefix}/${rc.instance}/${dayName(end)}/${bundle.summary.sha256.slice(0, 16)}`;
       const dataObject = await uploadVerified(client, rc, file, `${key}/analysis.jsonl.gz`);
       const summaryObject = await uploadVerified(client, rc, summaryFile, `${key}/summary.json`);
-      await atomicJSON(path.join(folder, 'uploaded.json'), { identity, at: new Date().toISOString(), dataObject, summaryObject });
+      const qualityObject = await uploadVerified(client, rc, qualityFile, `${key}/quality.json`);
+      await atomicJSON(path.join(folder, 'uploaded.json'), { identity, at: new Date().toISOString(), dataObject, summaryObject, qualityObject });
       state = { identity, nextEnd: end + DAY, lastSuccessEnd: end, sources: bundle.summary.sources }; await atomicJSON(cursorFile, state);
       uploaded.push({ day: dayName(end), key, dataQuality: bundle.summary.dataQuality });
     }

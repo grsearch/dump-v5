@@ -13,7 +13,7 @@ dump-sniper/daily/siliconvalley-01/2026-09-08/<内容哈希前缀>/analysis.json
 dump-sniper/daily/siliconvalley-01/2026-09-08/<内容哈希前缀>/summary.json
 ```
 
-每个日期下载这两个文件即可交给我分析。`analysis.jsonl.gz` 是 gzip 压缩的 JSON Lines，可用常见解压工具打开，每行独立 JSON；`summary.json` 是时间范围、来源文件大小、行数、数据质量标记和 SHA-256 校验值。没有自动创建公开下载链接，也不修改存储桶权限，请通过 COS 控制台登录下载。
+每个日期下载 analysis.jsonl.gz、summary.json、quality.json 三个文件即可交给我分析。quality.json 自动列出样本可用性、缺失原因、各配置训练门槛、模拟毛盈亏和队列健康统计。`analysis.jsonl.gz` 是 gzip 压缩的 JSON Lines，可用常见解压工具打开，每行独立 JSON；`summary.json` 是时间范围、来源文件大小、行数、数据质量标记和 SHA-256 校验值。没有自动创建公开下载链接，也不修改存储桶权限，请通过 COS 控制台登录下载。
 
 ## 归档内容
 
@@ -89,7 +89,7 @@ node helius/scripts/upload-daily.js --local-only
 
 定时器除每日 07:00 外，在启动两分钟后和服务结束每 15 分钟检查一次。已上传时只检查本地进度，**不请求 COS**。失败窗口先保留，再重试；有历史欠传时依日期补传，每次最多 7 天，其余下轮继续。磁盘仍保留原始日志是补传前提。
 
-使用腾讯云官方 SDK 3.0.0，HTTPS 上传；大文件自动分块，文件及分块并发均为 1，开启上传 Content-MD5 校验。上传后 HEAD 核对大小和 SHA-256 元数据，两个对象都成功才推进进度。HEAD 核对元数据不等于服务端重新计算 SHA-256；下载后可用摘要里的 SHA-256 独立校验。网络中断可能留下未完成分块，可另设 COS 生命周期清理未完成分块。
+使用腾讯云官方 SDK 3.0.0，HTTPS 上传；大文件自动分块，文件及分块并发均为 1，开启上传 Content-MD5 校验。上传后 HEAD 核对大小和 SHA-256 元数据，三个对象都成功才推进进度。HEAD 核对元数据不等于服务端重新计算 SHA-256；下载后可用摘要里的 SHA-256 独立校验。网络中断可能留下未完成分块，可另设 COS 生命周期清理未完成分块。
 
 压缩使用低压缩级别并流式处理；上传在独立进程运行，配置较低 CPU/磁盘调度优先级。不会让买单等待打包或上传，但仍共享服务器资源。当前每日会扫描保留日志以寻找跨日关联，日志长期增长会增加扫描时间和磁盘占用；不要删除仍有待补传或关联结果的文件。
 
@@ -102,3 +102,15 @@ node helius/scripts/upload-daily.js --local-only
 官方 SDK 调用和目标地域依据：[腾讯云官方 Node SDK](https://github.com/tencentyun/cos-nodejs-sdk-v5)、[COS 地域与域名](https://cloud.tencent.com/document/product/436/6224)。硅谷同地域 CVM/COS 可以按官方说明检查是否解析到内网地址；程序使用标准 COS 域名，不承诺已经验证内网路径或零费用。
 
 本次验证：62 项本地测试通过，覆盖北京时间边界、跨日关联、晚到补带、敏感信息排除、失败重试、补传及校验。没有真实 COS 密钥或服务器访问，因此未验证桶是否存在、账号权限、线上上传或 systemd 在目标服务器的运行结果。启用后以服务日志中的 `uploaded` 和 COS 内实际两个文件为准。
+
+## 立即检查最近一小时
+
+在项目根目录执行：
+
+```bash
+node helius/scripts/export-recent.js --hours 1
+```
+
+默认最近 1 小时，允许大于 0、最多 24 小时。输出路径会打印到终端，位于 helius/data/exports/manual-时间-唯一标识/，包含 analysis.jsonl.gz、summary.json、quality.json。仅读取本地日志，不请求 Helius 或 COS，不推进日报游标，不覆盖已冻结的 07:00 归档；每次独立生成。需要下载这整个目录。日常 COS 上传仍由原定时器执行，更新代码即可在下一次上传附带 quality.json，无须重启交易进程。
+
+质量报告的 windowCandidateCohort 按窗口内候选分母统计，区分已观察、覆盖中断和导出时尚无结果；窗口内结果可能对应更早候选，两者数量不必相等。训练 eligible 只计窗口内触发且具备历史与成熟标签的候选，跨窗上下文保留用于关联。模拟毛盈亏不包含费用、冲击和执行延迟；proxyEntryDelayMs 是观察模型的延迟，不是实盘成交测速。健康日志是采样记录，零丢弃不能证明全程完整覆盖。
