@@ -9,7 +9,7 @@ async function main() {
     options[args[i]] = args[i + 1];
   }
   const target = options['--target'] || 'rebound_60s';
-  if (!['rebound_30s', 'rebound_60s', 'strategy_proxy'].includes(target)) throw new Error('Unknown target');
+  if (!['rebound_30s', 'rebound_60s', 'strategy_proxy', 'loss_25', 'net_return'].includes(target)) throw new Error('Unknown target');
   const directory = path.resolve(options['--data'] || path.join(__dirname, '../data/shadow'));
   const out = path.resolve(options['--out'] || path.join(__dirname, '../data/models/shadow.json'));
   const dataset = await loadDataset(directory, target, options['--policy']);
@@ -17,6 +17,7 @@ async function main() {
   fs.mkdirSync(path.dirname(out), { recursive: true });
   fs.writeFileSync(`${out}.report.json`, JSON.stringify({ target, policyId: dataset.policyId, dataset: dataset.stats, ...result.report }, null, 2), { mode: 0o600 });
   if (result.model) fs.writeFileSync(out, JSON.stringify(result.model, null, 2), { mode: 0o600 });
+  else if (fs.existsSync(out)) fs.unlinkSync(out); // Never leave an older successful model at a failed run's output path.
   console.log(JSON.stringify({ ...result.report, dataset: dataset.stats, modelWritten: !!result.model, report: `${out}.report.json` }, null, 2));
   if (!result.model) process.exitCode = 2;
 }

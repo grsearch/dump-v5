@@ -15,7 +15,8 @@ async function prepare(source, env = process.env, now = Date.now()) {
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   const file = path.join(directory, `observation-${checked.id}-${now}.json`);
   await atomicJSON(file, model);
-  return { file, evaluationAfter: model.evaluationAfter, setting: `SHADOW_MODEL_FILE=${file}`, mode: 'observation_only', requiresTradingServiceRestart: true };
+  const setting = model.target === 'loss_25' ? 'SHADOW_RISK_MODEL_FILE' : model.target === 'net_return' ? 'SHADOW_RETURN_MODEL_FILE' : 'SHADOW_MODEL_FILE';
+  return { file, evaluationAfter: model.evaluationAfter, setting: `${setting}=${file}`, mode: 'observation_only', requiresTradingServiceRestart: true };
 }
 if (require.main === module) {
   if (process.argv.length !== 3) { console.error('Usage: node helius/scripts/prepare-observation-model.js MODEL.json'); process.exitCode = 1; }

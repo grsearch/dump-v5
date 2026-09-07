@@ -12,7 +12,7 @@ async function inspect(directory) {
   const counts = {}, samples = new Map(), outcomes = new Map(); let lines = 0, bytes = 0, first = null, footer = null;
   const audit = { windowCounts: {}, coverageGapReasons: {}, featureReasons: {}, policies: {}, paper: { closed: 0, wins: 0, losses: 0, flat: 0, missingPnl: 0, grossPnlSol: 0 }, shadowHealth: { observations: 0, maxQueueDepth: 0, maxDroppedPerSession: 0, maxHistoryEvictionsPerSession: 0 } };
   const closes = new Set(), delays = [];
-  const comparisons = new Map(), paperResults = new Map();
+  const comparisons = new Map(), paperResults = new Map(), exitComparisons = new Map();
   audit.migrationPipeline = { parser: null, worker: null, cacheStatus: null, parserAt: null, workerAt: null };
   const inc = (obj, key) => { obj[key] = (obj[key] || 0) + 1; };
   const input = fs.createReadStream(file), unzip = zlib.createGunzip();
@@ -60,6 +60,8 @@ async function inspect(directory) {
       if (r.type === 'sample') samples.set(r.id, r);
       if (r.type === 'outcome') outcomes.set(`${r.id}:${r.target}`, r);
       if (r.type === 'execution_comparison' && inside) comparisons.set(r.id, r);
+      if (r.type === 'exit_comparison' && inside) exitComparisons.set(`${r.id}:${r.variant}:${r.comparisonVersion}`, r);
+      if (exitComparisons.size > 300000) throw new Error('Exit comparison inspection limit exceeded');
       if (samples.size > 100000 || outcomes.size > 300000 || comparisons.size > 100000) throw new Error('Inspection sample limit exceeded');
     }
   } finally { input.destroy(); unzip.destroy(); }
@@ -102,6 +104,21 @@ async function inspect(directory) {
   audit.proxyEntryDelayMs = { count: delays.length, p50: delays.length ? delays[Math.floor((delays.length - 1) * 0.5)] : null, p95: delays.length ? delays[Math.floor((delays.length - 1) * 0.95)] : null };
   audit.warnings = [];
   audit.executionComparisons = {};
+  audit.exitComparisons = {};
+  for (const r of exitComparisons.values()) {
+    const key = `${r.policyId}:${r.comparisonVersion}:${r.variant}`;
+    const b = audit.exitComparisons[key] ||= { completedRecords: 0, observed: 0, unknown: 0, netPnlSol: 0,
+      paired: 0, baselinePairedSol: 0, variantPairedSol: 0, differenceSol: 0 };
+    b.completedRecords++;
+    if (r.status !== 'observed_proxy' || !Number.isFinite(r.netPnlSol)) { b.unknown++; continue; }
+    b.observed++; b.netPnlSol += r.netPnlSol;
+    const baseline = outcomes.get(`${r.id}:strategy_proxy`);
+    if (baseline?.policyId === r.policyId && baseline.status === 'observed_proxy' && Number.isFinite(baseline.netPnlSol)) {
+      b.paired++; b.baselinePairedSol += baseline.netPnlSol; b.variantPairedSol += r.netPnlSol;
+      b.differenceSol += r.netPnlSol - baseline.netPnlSol;
+    }
+  }
+  audit.exitComparisonNote = 'Completed variant records in export window; unfinished arms are not included. Compare paired totals only. Candidate-level proxy, not portfolio or live PnL.';
   audit.paperProxyPairs = { matchedObserved: 0, paperGrossPnlSol: 0, proxyNetPnlSol: 0 };
   for (const r of comparisons.values()) {
     for (const name of ['baseline', 'belowMaxSell', 'avoidPriorSellPressure', 'lossCooldown', 'combined']) {

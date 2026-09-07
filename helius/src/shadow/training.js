@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const readline = require('node:readline');
 const { FEATURE_NAMES } = require('./features');
-const { sigmoid, rawLogit } = require('./model');
+const { sigmoid, rawLogit, inTrainingRange, score } = require('./model');
 
 async function loadDataset(directory, target, wantedPolicy) {
   const files = fs.readdirSync(directory).filter(n => /^samples-.*\.jsonl$/.test(n)).sort();
@@ -21,12 +21,15 @@ async function loadDataset(directory, target, wantedPolicy) {
           || !FEATURE_NAMES.every(k => Number.isFinite(r.features.values[k]))) { invalid = true; continue; }
         rows.set(r.id, { id: r.id, key: r.key, at: r.at, mint: r.source?.mint, pool: r.source?.pool, policyId: r.policyId, values: r.features.values });
       }
-      if (r.type === 'outcome' && r.target === target && rows.has(r.id)) {
+      if (r.type === 'outcome' && r.target === (['loss_25', 'net_return'].includes(target) ? 'strategy_proxy' : target) && rows.has(r.id)) {
         const row = rows.get(r.id);
         if (r.status === 'observed_proxy' && [0, 1].includes(r.label) && Number.isFinite(r.at) && r.at >= row.at && r.policyId === row.policyId) {
           const minEnd = target === 'rebound_30s' ? row.at + 30000 : target === 'rebound_60s' ? row.at + 60000 : row.at;
           if (r.at < minEnd || row.y !== undefined) { invalid = true; continue; }
-          Object.assign(row, { y: r.label, endAt: r.at });
+          if (['loss_25', 'net_return'].includes(target) && (!Number.isFinite(r.netPnlSol) || !Number.isFinite(r.entryCostSol) || r.entryCostSol <= 0)) continue;
+          const netReturn = Number.isFinite(r.netPnlSol) && r.entryCostSol > 0 ? r.netPnlSol / r.entryCostSol : null;
+          Object.assign(row, { y: target === 'loss_25' ? Number(netReturn <= -0.25) : target === 'net_return' ? netReturn : r.label,
+            endAt: r.at, netPnlSol: r.netPnlSol, netReturn });
         }
       }
       if (rows.size + eligible.length > 100000) throw new Error('Dataset exceeds 100000 rows; select a smaller date range');
@@ -96,6 +99,7 @@ function metrics(probabilities, ys) {
   return { count: ys.length, brier: brier / ys.length, logLoss: logLoss / ys.length, accuracy: correct / ys.length, ece, reliability };
 }
 function train(rows, target, policyId) {
+  if (target === 'net_return') return trainReturn(rows, policyId);
   const split = chronologicalSplit(rows), groups = [split.train, split.calibration, split.test];
   const enough = groups.every((g, i) => g.length >= (i === 0 ? 300 : 100) && g.filter(r => r.y === 1).length >= 20 && g.filter(r => r.y === 0).length >= 20);
   const counts = { train: split.train.length, calibration: split.calibration.length, test: split.test.length, purged: split.purged };
@@ -105,12 +109,19 @@ function train(rows, target, policyId) {
   const x = split.train.map(r => FEATURE_NAMES.map((k, i) => (r.values[k] - means[i]) / scales[i]));
   const fitted = fitLogistic(x, split.train.map(r => r.y));
   const model = { schema: 1, target, policyId, features: FEATURE_NAMES, means, scales, ...fitted };
+  const coverage = { calibrationTotal: split.calibration.length, testTotal: split.test.length };
+  split.calibration = split.calibration.filter(r => inTrainingRange(model, r.values));
+  split.test = split.test.filter(r => inTrainingRange(model, r.values));
+  Object.assign(coverage, { calibrationScored: split.calibration.length, testScored: split.test.length,
+    calibrationRejected: coverage.calibrationTotal - split.calibration.length, testRejected: coverage.testTotal - split.test.length });
+  if ([split.calibration, split.test].some(g => g.length < 100 || g.filter(r => r.y === 1).length < 20 || g.filter(r => r.y === 0).length < 20))
+    return { model: null, report: { status: 'insufficient_scored_data', counts, coverage } };
   const logits = split.calibration.map(r => rawLogit(model, r.values));
   const mean = logits.reduce((a, b) => a + b, 0) / logits.length;
   const scale = Math.sqrt(logits.reduce((a, b) => a + (b - mean) ** 2, 0) / logits.length) || 1;
   const cal = fitLogistic(logits.map(v => [(v - mean) / scale]), split.calibration.map(r => r.y));
   model.calibration = { a: Math.max(0, cal.weights[0] / scale), b: cal.intercept - Math.max(0, cal.weights[0] / scale) * mean };
-  const p = split.test.map(r => sigmoid(model.calibration.a * rawLogit(model, r.values) + model.calibration.b));
+  const p = split.test.map(r => score(model, r.values));
   const tested = metrics(p, split.test.map(r => r.y));
   const baselineRate = split.calibration.reduce((sum, r) => sum + r.y, 0) / split.calibration.length;
   const baseline = metrics(split.test.map(() => baselineRate), split.test.map(r => r.y));
@@ -123,7 +134,50 @@ function train(rows, target, policyId) {
   const trainingMints = new Set([...split.train, ...split.calibration].map(r => r.mint));
   const unseen = split.test.map((r, i) => ({ r, p: p[i] })).filter(x => !trainingMints.has(x.r.mint));
   return { model, report: { status: passed ? 'experimental_validation_passed' : 'validation_failed', counts,
-    validation: model.validation, unseenMintTest: metrics(unseen.map(x => x.p), unseen.map(x => x.r.y)),
+    validation: model.validation, coverage, economics: economics(split.test, p, target === 'loss_25' ? p => p < 0.5 : p => p >= 0.5),
+    unseenMintTest: metrics(unseen.map(x => x.p), unseen.map(x => x.r.y)),
     warning: 'One historical holdout is not proof of live profitability. Never select thresholds on this test set and report them as new validation.' } };
 }
-module.exports = { loadDataset, chronologicalSplit, fitLogistic, metrics, train };
+function economics(rows, predictions, select) {
+  const chosen = rows.filter((r, i) => select(predictions[i])), known = chosen.filter(r => Number.isFinite(r.netPnlSol));
+  return { selected: chosen.length, known: known.length, unknown: chosen.length - known.length,
+    netPnlSol: known.length ? known.reduce((sum, r) => sum + r.netPnlSol, 0) : null,
+    note: 'Fixed threshold; candidate outcomes, not portfolio returns or a profitability validation gate.' };
+}
+function returnMetrics(ps, ys) {
+  if (!ys.length) return null;
+  return { count: ys.length, mse: ps.reduce((s, p, i) => s + (p - ys[i]) ** 2, 0) / ys.length,
+    mae: ps.reduce((s, p, i) => s + Math.abs(p - ys[i]), 0) / ys.length };
+}
+function trainReturn(rows, policyId) {
+  const split = chronologicalSplit(rows), counts = { train: split.train.length, calibration: split.calibration.length, test: split.test.length, purged: split.purged };
+  if (split.train.length < 300 || split.calibration.length < 100 || split.test.length < 100)
+    return { model: null, report: { status: 'insufficient_data', counts } };
+  const means = FEATURE_NAMES.map(k => split.train.reduce((a, r) => a + r.values[k], 0) / split.train.length);
+  const scales = FEATURE_NAMES.map((k, i) => Math.sqrt(split.train.reduce((a, r) => a + (r.values[k] - means[i]) ** 2, 0) / split.train.length) || 1);
+  const m = { schema: 1, target: 'net_return', policyId, features: FEATURE_NAMES, means, scales,
+    weights: FEATURE_NAMES.map(() => 0), intercept: split.train.reduce((a, r) => a + r.y, 0) / split.train.length, calibration: { a: 1, b: 0 } };
+  const xs = split.train.map(r => FEATURE_NAMES.map((k, i) => (r.values[k] - means[i]) / scales[i]));
+  // A step bounded by the average squared input norm keeps squared-loss descent stable.
+  const step = 0.5 / (1 + xs.reduce((a, x) => a + x.reduce((s, v) => s + v * v, 0), 0) / xs.length);
+  for (let t = 0; t < 1000; t++) {
+    const g = m.weights.map(() => 0); let bias = 0;
+    xs.forEach((x, i) => { const err = m.intercept + x.reduce((s, v, j) => s + v * m.weights[j], 0) - split.train[i].y;
+      bias += err; x.forEach((v, j) => { g[j] += err * v; }); });
+    m.intercept -= step * bias / xs.length; m.weights = m.weights.map((w, j) => w - step * (g[j] / xs.length + 0.01 * w));
+  }
+  const cal = split.calibration.filter(r => inTrainingRange(m, r.values)), test = split.test.filter(r => inTrainingRange(m, r.values));
+  const coverage = { calibrationTotal: split.calibration.length, testTotal: split.test.length, calibrationScored: cal.length, testScored: test.length,
+    calibrationRejected: split.calibration.length - cal.length, testRejected: split.test.length - test.length };
+  if (cal.length < 100 || test.length < 100) return { model: null, report: { status: 'insufficient_scored_data', counts, coverage } };
+  m.calibration.b = cal.reduce((s, r) => s + r.y - rawLogit(m, r.values), 0) / cal.length;
+  const ps = test.map(r => score(m, r.values)), prior = cal.reduce((s, r) => s + r.y, 0) / cal.length;
+  const tested = returnMetrics(ps, test.map(r => r.y)), baseline = returnMetrics(test.map(() => prior), test.map(r => r.y));
+  m.validation = { passed: tested.mse < baseline.mse, testCount: test.length, calibrationCount: cal.length, test: tested, baseline,
+    trainEnd: Math.max(...split.train.map(r => r.endAt)), calibrationStart: split.calStart, calibrationEnd: Math.max(...cal.map(r => r.endAt)), testStart: split.testStart };
+  m.createdAt = new Date().toISOString(); m.evaluationAfter = Math.max(...rows.map(r => r.endAt));
+  m.labelMeaning = 'Net proxy return relative to entry cost; not SOL, probability or live return';
+  return { model: m, report: { status: m.validation.passed ? 'experimental_validation_passed' : 'validation_failed', counts, coverage,
+    validation: m.validation, economics: economics(test, ps, p => p > 0) } };
+}
+module.exports = { loadDataset, chronologicalSplit, fitLogistic, metrics, train, returnMetrics };

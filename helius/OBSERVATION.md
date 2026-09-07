@@ -39,7 +39,7 @@ paper_sell、sell_submitted、确认记录增加诊断：首次触发时间、�
 
 ## 性能与归档
 
-模型、对照与年龄缓存都在原观察线程运行；新增数据复用行情，不增加 Helius 请求。买入路径不等待模型、年龄查询或实验结果。每个策略目标多一条 comparison 日志，增加本地磁盘和归档体积；年龄缓存写盘也共享机器资源。日报及小时归档自动包含这些记录，不需要改变 COS 定时器。76 项本地测试通过，包括迁移事件及指令联合认证、未知年龄、时序隔离、观察缺失、对照版本、钱包阻塞诊断及归档分组。
+模型、对照与年龄缓存都在原观察线程运行；新增数据复用行情，不增加 Helius 请求。买入路径不等待模型、年龄查询或实验结果。每个策略目标多一条 comparison 日志，增加本地磁盘和归档体积；年龄缓存写盘也共享机器资源。日报及小时归档自动包含这些记录，不需要改变 COS 定时器。82 项本地测试通过，包括迁移事件及指令联合认证、未知年龄、时序隔离、观察缺失、对照版本、钱包阻塞诊断及归档分组。
 
 ## 2026-09-08：迁移诊断与执行差额拆分
 
@@ -81,3 +81,54 @@ node scripts/diagnose-migration.js
 默认读取本机 `.env` 的 Helius RPC，逐笔查询 2026-09-08 01:03 和 01:06 两笔已知失败签名，共两次 `getTransaction`，每次最多 20 秒，不自动重试。也可在命令后提供 1–3 个签名。输出路径显示在终端，文件为 `data/migration-diagnosis-*.json`。将该文件下载用于排查；它包含公开的 Pump 指令账户与指令数据，不包含 RPC URL 或密钥。请求失败会写入状态并返回非零退出码。
 
 该工具只取证，不写 AGE 缓存，不回填旧训练样本。历史交易的当前查询结果也不能伪装成当时已经知道的信息。单元测试验证了格式和严格匹配；两笔真实交易的具体不匹配原因仍需服务器取证文件确认。官方格式来源：https://github.com/pump-fun/pump-public-docs/blob/main/idl/pump.json
+# 2026-09-08：风险、收益训练及退出观察对照
+
+本次不更改买卖参数，不让模型决定订单。新增功能在观察线程运行，复用已有行情，无额外 Helius 请求。程序仍不自主训练或替换模型。
+
+## 新训练目标
+
+- `loss_25`：现有策略完成退出后，净损失达到入场成本的 25% 或以上的概率。不是 RUG 判定，也不是持有期间最大回撤概率。
+- `net_return`：净收益 / 入场成本的回归估计。输出 `expectedNetReturn`（例如 0.02 表示 2%），不是 SOL 金额，不放入 probability 字段。
+- 两者仅使用已观察的 `strategy_proxy`、有限的 `netPnlSol` 和正数 `entryCostSol`。旧记录缺金额、删失或未完成时不造标签。因此有效样本可能少于原有二分类目标。
+
+仍按时间 60/20/20 切分、剔除跨区间标签。校准段和测试段均调用与运行时相同的 8 标准差过滤；拒绝数量写入 coverage，过滤后不足 100 条则不产出有效模型。分类还要求每类至少 20 条。测试和常数基线比较使用相同可评分子集。训练器不会按测试集收益寻找最优阈值。
+
+净收益回归为标准化特征的正则线性回归，仅用训练段拟合、校准段校正偏差。测试 MSE 小于同子集基线仅表示实验统计门槛通过，不是盈利验证。报告同时列出固定阈值下的已知净收益与未知数量；单独反弹数据缺少金额时保留未知，不能将报告的空合计解读为保本。
+
+在 helius 目录离线执行：
+
+```sh
+node scripts/train-shadow.js --data data/shadow --target loss_25 --out data/models/loss-25.json
+node scripts/train-shadow.js --data data/shadow --target net_return --out data/models/net-return.json
+```
+
+多策略归档应显式添加 `--policy HASH`。训练输入是 `samples-*.jsonl`，不是压缩归档路径；先提取并按来源保留样本/标签、去重。训练耗 CPU，应在分析机器运行，避免挤占交易服务器资源。报告为输出模型路径加 `.report.json`；验证失败的模型会被运行时拒绝；样本不足时会清除同一输出路径上的旧模型，以免误用。
+
+需要观察时，先用 `node scripts/prepare-observation-model.js MODEL.json` 检查配置和验证结果，并把输出的 setting 写入服务器 .env：
+
+```dotenv
+# 以下是可选模型路径；发行包不包含训练模型。
+# SHADOW_RISK_MODEL_FILE=data/models/loss-25.json
+# SHADOW_RETURN_MODEL_FILE=data/models/net-return.json
+SHADOW_EXIT_COMPARISONS=true
+```
+
+准备工具会将观察起点设为准备时刻和模型已用标签截止时间的较晚者。模型不热更新，需正常重启服务读取配置；模型无效、目标错误、历史不足或分布外时不给评分。sample / execution_comparison 新增 `objectivePredictions.loss25`、`objectivePredictions.netReturn`；shadow_health 提供两个模型状态。未配置时如实显示 no_model。
+
+## 三组固定退出对照
+
+所有对照共享原策略的模拟入场金额、时间与成本：
+
+1. `exit_250ms`：原退出触发逻辑，等待至少 250ms 后的第一条可见行情估算退出。
+2. `exit_1000ms`：原退出触发逻辑，等待至少 1000ms。
+3. `net_take5`：估计净收益达到 5% 时增加提前止盈触发，退出延迟沿用 SHADOW_EXIT_DELAY_MS；保留原止损、追踪和超时退出逻辑。
+
+触发时价格不能当成交价，没有及时可见行情则删失。对照属于 `exit_comparison` 独立记录，不改 strategy_proxy 的定义或 policyId。quality.json 的 `audit.exitComparisons` 按策略、版本、方案聚合已完成记录，并提供与同一候选原策略配对的差额；尚未完成的方案不在完成合计内。不能比较不同样本集合的总额后声称收益改善。
+
+对照可能延长观察至原 maxHoldMs，在现有 active/每池上限内运行；增加观察线程计算、日志和归档量，可能影响观察容量。关注 active、censored、queueDepth、dropped。可设 SHADOW_EXIT_COMPARISONS=false 关闭；不会改变真实交易参数。每日 COS 归档自动包含这些记录，无需调整 7 点定时器。
+
+## 本次验证与实际数据试训
+
+82 项测试通过，覆盖运行时一致过滤、收益单位、缺失金额拒绝、未来时间隔离、退出延迟、缺失对照、原标签不变及归档配对。本机 6400 条合成事件主线程入队 p95 约 0.0025ms，0 丢弃；不包含网络和观察线程计算，不能作为买入延迟承诺。
+
+9 月 8 日 7 点归档试训：两个新目标各 1273 条有效记录。loss_25 测试 Brier 0.18894 / 常数基线 0.19184；net_return 测试 MSE 0.05809 / 基线 0.05878，MAE 反而较差（0.20150 / 0.19343）。改进很小，且固定正收益预测筛选的 25 条已知结果仍为 -0.4305 SOL，不证明可盈利。私人数据、报告、模型保留本地，不进入发行包或 GitHub。

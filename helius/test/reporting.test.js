@@ -175,6 +175,18 @@ test('execution accounting bridge reconciles costs without changing quotes and d
   assert.equal(decompose(.2,{}).status,'legacy_missing_breakdown');
 });
 
+test('exit archive comparison pairs the same policy and preserves unknown outcomes', async t => {
+  const f = fixture(t), at = f.end - 1000;
+  write(path.join(f.env.SHADOW_DIRECTORY, 'samples-exits.jsonl'), [
+    { type: 'outcome', id: 'a', target: 'strategy_proxy', at, policyId: 'p', status: 'observed_proxy', netPnlSol: -.2 },
+    { type: 'exit_comparison', id: 'a', variant: 'exit_250ms', comparisonVersion: 1, at, policyId: 'p', status: 'observed_proxy', netPnlSol: .1 },
+    { type: 'exit_comparison', id: 'b', variant: 'exit_250ms', comparisonVersion: 1, at, policyId: 'p', status: 'censored', netPnlSol: null },
+  ]);
+  const a = await buildArchive({ c: f.c, outputDir: f.env.COS_EXPORT_DIRECTORY, end: f.end });
+  const q = await require('../scripts/inspect-export').inspect(a.folder), b = q.audit.exitComparisons['p:1:exit_250ms'];
+  assert.equal(b.paired, 1); assert.equal(b.unknown, 1); assert.ok(Math.abs(b.differenceSol - .3) < 1e-9);
+});
+
 test('execution audit retains unavailable comparisons and never invents legacy costs', async t => {
   const f=fixture(t),at=f.end-1000;
   write(`${f.c.stateFile}.jsonl`,[

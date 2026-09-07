@@ -31,6 +31,21 @@ function collector(extra = {}) {
 }
 function warm(t) { for (let at = 0; at < 60000; at += 5000) t.onSwap(swap(at), false, false); }
 
+test('exit research preserves baseline labels and archives missing variant exits', () => {
+  const enabled = collector({ exitComparisons: true }), disabled = collector({ exitComparisons: false });
+  for (const { tracker } of [enabled, disabled]) {
+    warm(tracker); tracker.onSwap(swap(60000), true, true);
+    tracker.onSwap(swap(60500), false, true);
+    tracker.onSwap(swap(61000, { postQuote: '140000000000' }), false, true);
+    tracker.onSwap(swap(61500, { postQuote: '130000000000' }), false, true);
+    tracker.gap('test_disconnect', 61600);
+  }
+  assert.deepEqual(enabled.records.filter(r => r.type === 'outcome'), disabled.records.filter(r => r.type === 'outcome'));
+  const variants = enabled.records.filter(r => r.type === 'exit_comparison');
+  assert.equal(variants.length, 3); assert.ok(variants.some(r => r.variant === 'exit_1000ms' && r.status === 'censored'));
+  assert.equal(enabled.tracker.active.size, 0);
+});
+
 test('shadow features contain only prior events, not the triggering dump or future observations', () => {
   const f = new Features(options);
   for (let i = 0; i < 12; i++) f.add(swap(i * 5000), i * 5000, i + 1);
