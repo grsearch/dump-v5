@@ -16,13 +16,19 @@ class Engine {
     this.lastSlots = new Map(); this.lastPoll = 0; this.lastCleanup = 0;
     this.seen = new Map(); this.ticks = 0; this.swaps = 0;
     this.shadow = shadow;
+    this.migrationDiagnostics = {}; this.migrationDiagnosticSamples = 0;
   }
   shadowEvent(method, ...args) { try { return this.shadow?.[method](...args); } catch (_) { /* Observation cannot veto or crash trading. */ } }
   onTransaction(result) {
     if (this.stopped || !result.signature || this.seen.has(result.signature)) return;
     this.seen.set(result.signature, Date.now()); this.ticks++;
     if (this.seen.size > 20000) this.seen.delete(this.seen.keys().next().value);
-    for (const swap of parseSwaps(result, event => this.shadowEvent('poolCreated', event))) {
+    for (const swap of parseSwaps(result, event => this.shadowEvent('poolCreated', event), d => {
+      this.migrationDiagnostics[d.stage] = (this.migrationDiagnostics[d.stage] || 0) + d.count;
+      if (d.signature && this.migrationDiagnosticSamples < 20) {
+        this.migrationDiagnosticSamples++; this.store.log('migration_diagnostic', d);
+      }
+    })) {
       this.swaps++;
       this.shadowEvent('observe', swap, matchesBaseSignal(swap, this.c), isSignal(swap, this.c));
       const previous = this.lastSlots.get(swap.pool);
@@ -286,7 +292,8 @@ class Engine {
     this.store.save();
     const dayBytes = this.data.streamDays[new Date().toISOString().slice(0, 10)] || 0;
     this.store.log('health', { connected: this.stream.connected, transactions: this.ticks, parsedSwaps: this.swaps,
-      rpcRequests: this.executor.rpcCalls, positions: Object.keys(this.data.positions).length, pending: Object.keys(this.data.pending).length,
+      rpcRequests: this.executor.rpcCalls, migrationDiagnostics: this.migrationDiagnostics,
+      positions: Object.keys(this.data.positions).length, pending: Object.keys(this.data.pending).length,
       streamMBToday: +(dayBytes / 1e6).toFixed(3), estimatedStreamCreditsToday: +(dayBytes / 1e6 * 20).toFixed(1) });
     const shadow = this.shadowEvent('stats');
     if (shadow) this.store.log('shadow_health', shadow);

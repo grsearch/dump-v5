@@ -89,9 +89,9 @@ test('failed upload retains window and retries identical artifact before advanci
   const cursor = path.join(f.env.COS_EXPORT_DIRECTORY, 'upload-state.json');
   assert.equal(JSON.parse(fs.readFileSync(cursor)).nextEnd, f.end);
   const result = await run({ env: f.env, now: f.end + 10000, client });
-  assert.equal(result.status, 'uploaded'); assert.equal(client.calls.length, 3);
+  assert.equal(result.status, 'uploaded'); assert.equal(client.calls.length, 4);
   const again = await run({ env: f.env, now: f.end + 20000, client });
-  assert.equal(again.status, 'up_to_date'); assert.equal(client.calls.length, 3);
+  assert.equal(again.status, 'up_to_date'); assert.equal(client.calls.length, 4);
   const recovered = await run({ env: f.env, now: f.end + 3 * DAY + 5000, client });
   assert.equal(recovered.uploaded.length, 3);
 });
@@ -158,4 +158,31 @@ test('quality groups provisional pool ages and comparison exclusions without cal
   assert.equal(q.audit.executionComparisons['p:e:baseline'].netPnlSol,-.7);
   assert.equal(q.audit.executionComparisons['p:e:belowMaxSell'].reject,1);
   assert.equal(q.audit.executionComparisons['p:e:avoidPriorSellPressure'].unknownRule,1);
+});
+
+test('execution accounting bridge reconciles costs without changing quotes and detects corruption', () => {
+  const {buyQuote,liquidation,liquidationDetails}=require('../src/shadow/tracker');
+  const {decompose}=require('../src/reporting/execution-audit');
+  const c={sizeSol:1,feeBps:100,slippageBps:100,networkFeeSol:.000305};
+  const a={postBase:'100000000000',postQuote:'100000000000',virtual:'10000000000'};
+  const b={...a,postQuote:'120000000000'};
+  const entry=buyQuote(a,c),exit=liquidationDetails(b,entry.amount,c);
+  assert.equal(exit.net,liquidation(b,entry.amount,c));
+  const comparison={netPnlSol:exit.net-entry.cost,executionBreakdown:{entry:entry.breakdown,exit}};
+  const d=decompose(.2,comparison);assert.equal(d.status,'reconciled');assert.ok(Math.abs(d.residualSol)<1e-10);
+  assert.ok(d.components.entryCurveImpact<0);assert.ok(d.components.exitFee<0);
+  assert.equal(decompose(.2,{...comparison,netPnlSol:1}).status,'mismatch');
+  assert.equal(decompose(.2,{}).status,'legacy_missing_breakdown');
+});
+
+test('execution audit retains unavailable comparisons and never invents legacy costs', async t => {
+  const f=fixture(t),at=f.end-1000;
+  write(`${f.c.stateFile}.jsonl`,[
+    {type:'paper_sell',time:new Date(at).toISOString(),positionId:'s',pool:'p',grossPnlSol:.1},
+    {type:'paper_sell',time:new Date(at).toISOString(),positionId:'missing',pool:'p',grossPnlSol:.2}]);
+  write(path.join(f.env.SHADOW_DIRECTORY,'samples-pairs.jsonl'),[{type:'execution_comparison',id:'id',key:'s:p',at,status:'observed_proxy',netPnlSol:-.2}]);
+  const a=await buildArchive({c:f.c,outputDir:f.env.COS_EXPORT_DIRECTORY,end:f.end});
+  const audit=await require('../src/reporting/execution-audit').executionAudit(a.folder);
+  assert.equal(audit.totals.legacyMissingBreakdown,1);assert.equal(audit.totals.noComparison,1);
+  assert.equal(audit.totals.proxyPnlSol,-.2);assert.equal(audit.rows[0].decomposition.components,undefined);
 });

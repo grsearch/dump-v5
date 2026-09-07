@@ -242,3 +242,13 @@ test('execution comparison preserves delayed cost model, filter versions and unk
   const other = collector(); other.tracker.onSwap(swap(60000), true, true); other.tracker.gap('disconnect', 61000);
   assert.equal(other.records.find(r => r.type === 'execution_comparison').label, null);
 });
+
+test('migration diagnostics distinguish restored evidence, received evidence and unknown candidate age', () => {
+  const {Age}=require('../src/shadow/age');const a=new Age();
+  const e={pool:'p',mint:'m',createdAt:1000,migrationAt:1000,observedAt:1000,source:'pump_migrate_processed'};
+  a.created(e,true);a.created({...e,pool:'p2'});
+  assert.equal(a.counters.restored,1);assert.equal(a.counters.accepted,1);
+  assert.equal(a.snapshot({pool:'missing',mint:'m'},2000).unknownReason,'migration_not_cached');
+  assert.equal(a.snapshot({pool:'p',mint:'m'},2000).migrationAgeMs,1000);
+  assert.equal(a.counters.known,1);assert.equal(a.counters.unknown,1);
+});

@@ -18,14 +18,22 @@ function buyQuote(s, c) {
   const x = Number(s.postBase), y = Number(s.postQuote) / 1e9 + Number(s.virtual || '0') / 1e9;
   const input = c.sizeSol * (1 - c.feeBps / 10000);
   const amount = Math.floor(x * input / (y + input) * (1 - c.slippageBps / 10000));
-  return x > 0 && y > 0 && Number.isSafeInteger(amount) && amount > 0 ? { amount, cost: c.sizeSol + c.networkFeeSol } : null;
+  return x > 0 && y > 0 && Number.isSafeInteger(amount) && amount > 0 ? { amount, cost: c.sizeSol + c.networkFeeSol,
+    breakdown: { version: 1, sizeSol: c.sizeSol, spotPrice: y / x, spotAmount: c.sizeSol * x / y,
+      curveAmount: x * c.sizeSol / (y + c.sizeSol), afterFeeAmount: x * input / (y + input),
+      filledAmount: amount, networkFeeSol: c.networkFeeSol,
+      postBase: s.postBase, postQuote: s.postQuote, virtual: s.virtual || '0' } } : null;
 }
-function liquidation(s, amount, c) {
+function liquidationDetails(s, amount, c) {
   const x = Number(s.postBase), realQuote = Number(s.postQuote) / 1e9, effective = realQuote + Number(s.virtual || '0') / 1e9;
-  const out = effective * amount / (x + amount) * (1 - c.feeBps / 10000) * (1 - c.slippageBps / 10000);
+  const curveOut = effective * amount / (x + amount), afterFeeOut = curveOut * (1 - c.feeBps / 10000);
+  const out = afterFeeOut * (1 - c.slippageBps / 10000);
   if (!(x > 0 && effective > 0 && out >= 0 && out <= realQuote)) return null;
-  return out - c.networkFeeSol;
+  return { version: 1, spotPrice: effective / x, spotProceeds: effective * amount / x, curveOut, afterFeeOut,
+    afterSlippageOut: out, networkFeeSol: c.networkFeeSol, net: out - c.networkFeeSol,
+    postBase: s.postBase, postQuote: s.postQuote, virtual: s.virtual || '0' };
 }
+function liquidation(s, amount, c) { return liquidationDetails(s, amount, c)?.net ?? null; }
 class Tracker {
   constructor(c, write, { runId = crypto.randomUUID(), now = Date.now } = {}) {
     this.c = c; this.write = write; this.runId = runId; this.now = now;
@@ -129,7 +137,7 @@ class Tracker {
       this.emit({ type: 'proxy_entry', id: sample.id, at, slot: s.slot, amount: String(quote.amount), costSol: quote.cost,
         actualEntryDelayMs: at - sample.at });
     }
-    const net = liquidation(s, sample.entry.amount, this.c);
+    const exitDetails = liquidationDetails(s, sample.entry.amount, this.c), net = exitDetails?.net ?? null;
     if (net === null) { this.finishIncomplete(sample, 'unquotable_exit', at); return; }
     const pnl = (net / sample.entry.cost - 1) * 100;
     for (const [target, h] of Object.entries(sample.horizons)) {
@@ -151,6 +159,7 @@ class Tracker {
         sample.strategyDone = true;
         this.label(sample, 'strategy_proxy', { status: 'observed_proxy', label: pnl > 0 ? 1 : 0, netPnlPct: pnl,
           netPnlSol: net - sample.entry.cost, entryCostSol: sample.entry.cost, exitProceedsSol: net,
+          executionBreakdown: { version: 1, entry: sample.entry.breakdown, exit: exitDetails },
           entryAt: sample.entry.at, exitAt: at, reason: sample.exitPending.reason,
           triggerAt: sample.exitPending.triggerAt, triggerPrice: sample.exitPending.price ?? null,
           exitObservationPrice: s.price, exitObservationSlot: s.slot,
@@ -178,6 +187,7 @@ class Tracker {
     this.emit({ type: 'decision', key, status, at, ...extra });
   }
   stats() { return { samples: this.samples, outcomes: this.outcomes, censored: this.censored, active: this.active.size,
+    migrationAge: { ...this.ages.counters, cachedPools: this.ages.pools.size },
     historyPools: this.features.pools.size, historyEvents: this.features.total, historyEvictions: this.features.evictions, model: this.model.status }; }
 }
-module.exports = { Tracker, assumptions, policyId, buyQuote, liquidation };
+module.exports = { Tracker, assumptions, policyId, buyQuote, liquidation, liquidationDetails };

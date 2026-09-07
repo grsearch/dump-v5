@@ -2,7 +2,7 @@
 const { VersionedTransaction } = require('@solana/web3.js');
 const bs58 = require('bs58').default;
 const layout = require('./pump-layout.json');
-const migrationLayout = require('./migration-layout.json');
+const { migrations } = require('./migration');
 const { PUMP, WSOL } = require('./config');
 const CPI_TAG = Buffer.from([228, 69, 165, 46, 81, 203, 154, 29]);
 
@@ -59,22 +59,10 @@ function decodeEvent(data, schema = layout) {
   return out.pool && out.user && (out.user_quote_amount_out !== undefined || out.user_quote_amount_in !== undefined) ? out : null;
 }
 
-function parseSwaps(result, onPoolCreated) {
+function parseSwaps(result, onPoolCreated, onMigrationDiagnostic) {
   const tx = normalize(result);
   if (!tx) return [];
-  if (onPoolCreated) {
-    const spec = migrationLayout.instructions[0], index = name => spec.accounts.findIndex(a => a.name === name);
-    const migrations = tx.instructions.filter(i => i.program === migrationLayout.address && i.data.subarray(0, 8).equals(Buffer.from(spec.discriminator)));
-    for (const ix of tx.instructions) {
-      if (ix.program !== migrationLayout.address || !ix.data.subarray(0, 8).equals(CPI_TAG)) continue;
-      const e = decodeEvent(ix.data.subarray(8), migrationLayout);
-      if (!e || (e.quote_mint && e.quote_mint !== WSOL)) continue;
-      if (!migrations.some(m => m.accounts[index('mint')] === e.mint && m.accounts[index('pool')] === e.pool
-        && m.accounts[index('pump_amm')] === PUMP && m.accounts[index('wsol_mint')] === WSOL)) continue;
-      onPoolCreated({ pool: e.pool, mint: e.mint, createdAt: Number(e.timestamp) * 1000, migrationAt: Number(e.timestamp) * 1000,
-        observedAt: result.receivedAt || Date.now(), signature: result.signature, slot: result.slot, source: 'pump_migrate_processed' });
-    }
-  }
+  if (onPoolCreated) migrations(tx, decodeEvent, onPoolCreated, onMigrationDiagnostic);
   const events = tx.instructions.filter(i => i.program === PUMP && i.data.subarray(0, 8).equals(CPI_TAG))
     .map(i => decodeEvent(i.data.subarray(8))).filter(Boolean);
   for (const e of events) if (e.name === 'CreatePoolEvent' && e.quote_mint === WSOL && e.base_mint !== WSOL) {

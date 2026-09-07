@@ -13,6 +13,7 @@ async function inspect(directory) {
   const audit = { windowCounts: {}, coverageGapReasons: {}, featureReasons: {}, policies: {}, paper: { closed: 0, wins: 0, losses: 0, flat: 0, missingPnl: 0, grossPnlSol: 0 }, shadowHealth: { observations: 0, maxQueueDepth: 0, maxDroppedPerSession: 0, maxHistoryEvictionsPerSession: 0 } };
   const closes = new Set(), delays = [];
   const comparisons = new Map(), paperResults = new Map();
+  audit.migrationPipeline = { parser: null, worker: null, cacheStatus: null, parserAt: null, workerAt: null };
   const inc = (obj, key) => { obj[key] = (obj[key] || 0) + 1; };
   const input = fs.createReadStream(file), unzip = zlib.createGunzip();
   input.on('error', e => unzip.destroy(e)); input.pipe(unzip);
@@ -25,6 +26,13 @@ async function inspect(directory) {
       if (row.dataset === 'summary') footer = r;
       const at = r.at ?? Date.parse(r.time), inside = at >= Date.parse(summary.window.start) && at < Date.parse(summary.window.endExclusive);
       if (inside) {
+        const pipeline = audit.migrationPipeline;
+        if (row.dataset === 'trading' && r.type === 'health' && r.migrationDiagnostics && at >= (pipeline.parserAt || 0)) {
+          pipeline.parser = r.migrationDiagnostics; pipeline.parserAt = at;
+        }
+        if (row.dataset === 'trading' && r.type === 'shadow_health' && r.migrationAge && at >= (pipeline.workerAt || 0)) {
+          pipeline.worker = r.migrationAge; pipeline.cacheStatus = r.ageCacheStatus || null; pipeline.workerAt = at;
+        }
         inc(audit.windowCounts, `${row.dataset}:${r.type || ''}`);
         if (row.dataset === 'trading' && r.type === 'paper_sell') {
           if (r.positionId && r.pool && Number.isFinite(r.grossPnlSol)) paperResults.set(`${r.positionId}:${r.pool}`, r.grossPnlSol);
@@ -122,6 +130,9 @@ async function inspect(directory) {
     if (o?.status === 'observed_proxy') { b.observed60s++; b.positive60s += o.label === 1 ? 1 : 0; b.severeProxyDrawdown60s += o.minNetPct <= -50 ? 1 : 0; }
   }
   audit.comparisonNote = 'Versioned candidate-level proxy comparisons, not independent portfolio returns; paper pairs can have different entry/exit times. AGE is time since observed Pump migration (processed, not finalized), not token creation or ordinary pool creation; >=50% proxy drawdown is not a confirmed rug.';
+  if (Object.keys(audit.migrationAge).length && Object.keys(audit.migrationAge).every(k => k.endsWith(':unknown'))) {
+    audit.warnings.push('All migration ages are unknown: inspect migrationPipeline; collection is not yet verified.');
+  }
   if (Object.keys(audit.coverageGapReasons).length) audit.warnings.push('Coverage gaps exist; censored labels are unknown, not negative.');
   if (Object.keys(audit.featureReasons).some(k => k !== 'ready')) audit.warnings.push('Some candidates lack prior history and cannot train.');
   if (Object.keys(audit.policies).length > 1) audit.warnings.push('Multiple policies: train and evaluate separately.');

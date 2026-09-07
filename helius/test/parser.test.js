@@ -62,5 +62,23 @@ test('migration AGE requires matching Pump migrate instruction and completion ev
   const ev={programId:ml.address,accounts:[],data:bs58.encode(Buffer.concat([CPI_TAG,Buffer.from(ml.events[0].discriminator),...bytes]))};
   tx.transaction.meta.innerInstructions[0].instructions.push(ev);
   const found=[];parseSwaps(tx,e=>found.push(e));assert.equal(found[0].migrationAt,1000000);assert.equal(found[0].source,'pump_migrate_processed');
+  const data = Buffer.concat([Buffer.from(ml.events[0].discriminator),...bytes]).toString('base64');
+  tx.transaction.meta.logMessages = [`Program ${ml.address} invoke [1]`, `Program data: ${data}`, `Program ${ml.address} success`];
+  const dedup=[];parseSwaps(tx,e=>dedup.push(e));assert.equal(dedup.length,1);
+  tx.transaction.meta.innerInstructions[0].instructions.pop();
+  const logged=[], diagnostics=[];parseSwaps(tx,e=>logged.push(e),d=>diagnostics.push(d));
+  assert.equal(logged[0].evidenceTransport,'runtime_log');assert.ok(diagnostics.some(d=>d.stage==='migration_matched'));
+  tx.transaction.meta.logMessages = [`Program ${key(88)} invoke [1]`, `Program data: ${data}`, `Program ${key(88)} success`];
+  const spoofed=[];parseSwaps(tx,e=>spoofed.push(e));assert.equal(spoofed.length,0);
+  tx.transaction.meta.logMessages = [`Program ${ml.address} invoke [1]`, `Program data: ${data}`, `Program ${ml.address} success`];
   tx.transaction.transaction.message.instructions.pop();const rejected=[];parseSwaps(tx,e=>rejected.push(e));assert.equal(rejected.length,0);
+});
+
+test('runtime log attribution rejects failed, truncated, nested foreign and spoofed frames', () => {
+  const {programData}=require('../src/migration');
+  assert.equal(programData(['Program P invoke [1]','Program data: YQ==','Program P failed: x'],'P').length,0);
+  assert.equal(programData(['Program P invoke [1]','Program data: YQ=='],'P').length,0);
+  assert.equal(programData(['Program P invoke [1]','Program Q invoke [2]','Program data: YQ==','Program Q success','Program P success'],'P').length,0);
+  assert.equal(programData(['Program log: Program P invoke [1]','Program data: YQ==','Program P success'],'P').length,0);
+  assert.equal(programData(['Program Q invoke [1]','Program P invoke [2]','Program data: YQ==','Program P success','Program Q failed: x'],'P').length,0);
 });

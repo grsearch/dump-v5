@@ -12,6 +12,7 @@ async function run({ env = process.env, hours = 1, now = Date.now() } = {}) {
     start: now - Math.round(hours * 3600000), end: now, now, manual: true, secrets });
   const quality = await inspect(bundle.folder);
   await atomicJSON(path.join(bundle.folder, 'quality.json'), quality);
+  await atomicJSON(path.join(bundle.folder, 'execution-audit.json'), await require('../src/reporting/execution-audit').executionAudit(bundle.folder));
   return { status: 'local_export_only', folder: bundle.folder, window: bundle.summary.window, quality };
 }
 if (require.main === module) {

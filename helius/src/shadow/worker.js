@@ -21,19 +21,24 @@ function write(record) {
 }
 const tracker = new Tracker(config, write, { runId });
 const ageFile = path.join(config.directory, 'migration-age-cache.json');
+let ageCacheStatus = 'missing';
 try {
   if (fs.statSync(ageFile).size <= 16 * 1024 * 1024) {
     const entries = JSON.parse(fs.readFileSync(ageFile, 'utf8'));
-    if (Array.isArray(entries)) for (const e of entries.slice(-20000)) tracker.ages.created(e);
-  }
-} catch (_) { /* Missing cache means unknown age. */ }
+    if (Array.isArray(entries)) { for (const e of entries.slice(-20000)) tracker.ages.created(e, true); ageCacheStatus = 'loaded'; }
+    else ageCacheStatus = 'invalid';
+  } else ageCacheStatus = 'oversized';
+} catch (e) { ageCacheStatus = e.code === 'ENOENT' ? 'missing' : 'read_failed'; }
 let ageDirty = false, lastAgeSave = 0;
 function saveAges() {
   if (!ageDirty) return;
-  fs.writeFileSync(`${ageFile}.tmp`, JSON.stringify([...tracker.ages.pools.values()]), { mode: 0o600 });
-  fs.renameSync(`${ageFile}.tmp`, ageFile); ageDirty = false; lastAgeSave = Date.now();
+  try {
+    fs.writeFileSync(`${ageFile}.tmp`, JSON.stringify([...tracker.ages.pools.values()]), { mode: 0o600 });
+    fs.renameSync(`${ageFile}.tmp`, ageFile); ageDirty = false; ageCacheStatus = 'saved';
+  } catch (_) { ageCacheStatus = 'write_failed'; }
+  lastAgeSave = Date.now();
 }
-function publish(status = 'running') { parentPort.postMessage({ type: 'status', value: { status, ...tracker.stats(), file: name } }); }
+function publish(status = 'running') { parentPort.postMessage({ type: 'status', value: { status, ...tracker.stats(), ageCacheStatus, file: name } }); }
 const timer = setInterval(() => { tracker.tick(Date.now()); flush(); if (Date.now() - lastAgeSave >= 60000) saveAges(); publish(); }, 1000);
 parentPort.on('message', msg => {
   if (closing) return;

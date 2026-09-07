@@ -8,7 +8,7 @@
 
 [安装与配置](helius/README.md) · [完整买卖策略](helius/STRATEGY.md) · [反弹样本与训练](helius/SHADOW.md) · [买入速度与延迟分析](helius/LATENCY.md) · [验证记录](helius/VALIDATION.md)
 
-默认开启反弹观察：复用行情，记录买入前特征及之后 30/60 秒反弹和策略模拟结果，支持离线训练、校准及时间分区验证。独立线程处理，不增加 Helius 请求。没有真实数据训练的模型时概率为空；加载模型后也只记录预测，暂不参与买卖。71 项本地测试通过，尚无真实行情模型或实盘胜率结果。
+默认开启反弹观察：复用行情，记录买入前特征及之后 30/60 秒反弹和策略模拟结果，支持离线训练、校准及时间分区验证。独立线程处理，不增加 Helius 请求。没有真实数据训练的模型时概率为空；加载模型后也只记录预测，暂不参与买卖。75 项本地测试通过，尚无真实行情模型或实盘胜率结果。
 
 [每天北京时间 07:00 上传 COS](helius/COS-UPLOAD.md)：目标 guigu-1403019446 / na-siliconvalley。将密钥填入服务器 `helius/.cos.env` 后按说明启用定时器；下载每天的 analysis.jsonl.gz 和 summary.json 即可交回分析。随包附 [分析请求模板](helius/ANALYSIS-REQUEST.md)。
 
@@ -31,3 +31,5 @@ npm start
 即时检查最近一小时：`node helius/scripts/export-recent.js --hours 1`。每份日报新增 quality.json，区分缺失标签与负样本，并报告模拟毛盈亏和训练门槛。
 
 新增[执行对照、模型观察与迁移 AGE分析](helius/OBSERVATION.md)：不改变买卖决策，复用 Helius 行情记录毕业迁移事件，未知迁移年龄保持为空。
+
+2026-09-08：新增迁移事件接收/解析/缓存/命中诊断，以及逐笔 execution-audit.json。买卖阈值不变；更新后先用15分钟导出核对采集。
