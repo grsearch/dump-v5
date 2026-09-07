@@ -1,0 +1,28 @@
+[Unit]
+Description=Helius PumpSwap market-wide dump sniper v5
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/dump-sniper/helius
+ExecStart=/usr/bin/node /opt/dump-sniper/helius/src/index.js
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=40
+KillSignal=SIGTERM
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+LimitNOFILE=65536
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dump-sniper
+
+[Install]
+WantedBy=multi-user.target
