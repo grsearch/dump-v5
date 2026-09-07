@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { publicConfig } = require('../reporting/archive');
+const { Ledger } = require('./ledger');
 const pick = (o, keys) => Object.fromEntries(keys.filter(k => o?.[k] !== undefined).map(k => [k, o[k]]));
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1']);
 function options(env = process.env) {
@@ -32,7 +33,7 @@ async function snapshot(c, exportDirectory, now = Date.now()) {
     state = JSON.parse(await fs.readFile(c.stateFile, 'utf8')); mtime = stat.mtimeMs;
   } catch (_) { warnings.push('持仓状态暂不可读；不代表空仓。'); }
   try { logs = await tail(`${c.stateFile}.jsonl`); } catch (_) { warnings.push('运行日志暂不可读。'); }
-  if (logs.truncated) warnings.push('只展示日志末尾 2 MB，表格及图表不是全天统计。');
+  if (logs.truncated) warnings.push('健康图表读取日志末尾 2 MB；24 小时盈亏与分页另行读取完整日志。');
   if (logs.invalid) warnings.push('日志中有无法解析的行。');
   const last = type => logs.rows.findLast(r => r.type === type);
   const starting = last('starting'), startAt = Date.parse(starting?.time) || 0;
@@ -60,6 +61,7 @@ async function snapshot(c, exportDirectory, now = Date.now()) {
 }
 function createServer(c, opts, exportDirectory) {
   let cache, cacheAt = 0, loading;
+  const ledger = new Ledger(`${c.stateFile}.jsonl`);
   const tokenHash = crypto.createHash('sha256').update(opts.token).digest();
   return http.createServer(async (req, res) => {
     res.setHeader('Cache-Control', 'no-store'); res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('Referrer-Policy', 'no-referrer');
@@ -73,11 +75,17 @@ function createServer(c, opts, exportDirectory) {
         if (req.headers.origin && new URL(req.headers.origin).host !== req.headers.host && req.headers.origin !== opts.publicOrigin) return send(403, '{"error":"origin"}');
         const bearer = String(req.headers.authorization || '').replace(/^Bearer /, '');
         if (opts.token && !crypto.timingSafeEqual(tokenHash, crypto.createHash('sha256').update(bearer).digest())) return send(401, '{"error":"unauthorized"}');
+        const page = Number(url.searchParams.get('page') || 1), pageSize = Number(url.searchParams.get('pageSize') || 20);
+        if (!Number.isSafeInteger(page) || page < 1 || ![10, 20, 50].includes(pageSize)) return send(400, '{"error":"invalid_page"}');
         if (!cache || Date.now() - cacheAt > 4000) {
-          loading ||= snapshot(c, exportDirectory).then(value => { cache = value; cacheAt = Date.now(); }).finally(() => { loading = null; });
+          loading ||= snapshot(c, exportDirectory).then(async value => {
+            try { await ledger.update(value.at); value.ledgerAvailable = true; }
+            catch (_) { value.ledgerAvailable = false; value.warnings.push('24 小时交易日志读取失败，盈亏和分页暂不可用。'); }
+            cache = value; cacheAt = Date.now();
+          }).finally(() => { loading = null; });
           await loading;
         }
-        return send(200, JSON.stringify(cache));
+        return send(200, JSON.stringify({ ...cache, trades: [], ...(cache.ledgerAvailable ? ledger.view(cache.mode, cache.at, page, pageSize) : { pnl24h: null, pagination: null }) }));
       }
       const assets = { '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/style.css': ['style.css', 'text/css'] };
       if (!assets[url.pathname]) return send(404, '{"error":"not_found"}');

@@ -101,4 +101,4 @@ node helius/scripts/upload-daily.js --local-only
 
 官方 SDK 调用和目标地域依据：[腾讯云官方 Node SDK](https://github.com/tencentyun/cos-nodejs-sdk-v5)、[COS 地域与域名](https://cloud.tencent.com/document/product/436/6224)。硅谷同地域 CVM/COS 可以按官方说明检查是否解析到内网地址；程序使用标准 COS 域名，不承诺已经验证内网路径或零费用。
 
-本次验证：59 项本地测试通过，覆盖北京时间边界、跨日关联、晚到补带、敏感信息排除、失败重试、补传及校验。没有真实 COS 密钥或服务器访问，因此未验证桶是否存在、账号权限、线上上传或 systemd 在目标服务器的运行结果。启用后以服务日志中的 `uploaded` 和 COS 内实际两个文件为准。
+本次验证：62 项本地测试通过，覆盖北京时间边界、跨日关联、晚到补带、敏感信息排除、失败重试、补传及校验。没有真实 COS 密钥或服务器访问，因此未验证桶是否存在、账号权限、线上上传或 systemd 在目标服务器的运行结果。启用后以服务日志中的 `uploaded` 和 COS 内实际两个文件为准。
