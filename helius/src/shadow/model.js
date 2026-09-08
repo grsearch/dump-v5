@@ -23,7 +23,7 @@ class Model {
       if (fs.statSync(file).size > 1000000) throw new Error('oversized model');
       const text = fs.readFileSync(file, 'utf8'); const m = JSON.parse(text);
       if (m.schema !== 1 || JSON.stringify(m.features) !== JSON.stringify(FEATURE_NAMES) || m.policyId !== policyId
-        || !['rebound_30s', 'rebound_60s', 'strategy_proxy', 'loss_25', 'net_return'].includes(m.target)) throw new Error('schema mismatch');
+        || !['rebound_30s', 'rebound_60s', 'strategy_proxy', 'loss_25', 'net_return', 'drawdown_60s_25'].includes(m.target)) throw new Error('schema mismatch');
       const n = FEATURE_NAMES.length;
       if (![m.means, m.scales, m.weights].every(a => Array.isArray(a) && a.length === n && a.every(Number.isFinite))
         || m.scales.some(x => x <= 0) || !Number.isFinite(m.intercept)

@@ -15,7 +15,7 @@ async function prepare(source, env = process.env, now = Date.now()) {
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   const file = path.join(directory, `observation-${checked.id}-${now}.json`);
   await atomicJSON(file, model);
-  const setting = model.target === 'loss_25' ? 'SHADOW_RISK_MODEL_FILE' : model.target === 'net_return' ? 'SHADOW_RETURN_MODEL_FILE' : 'SHADOW_MODEL_FILE';
+  const setting = model.target === 'drawdown_60s_25' ? 'SHADOW_DRAWDOWN_MODEL_FILE' : model.target === 'loss_25' ? 'SHADOW_RISK_MODEL_FILE' : model.target === 'net_return' ? 'SHADOW_RETURN_MODEL_FILE' : 'SHADOW_MODEL_FILE';
   return { file, evaluationAfter: model.evaluationAfter, setting: `${setting}=${file}`, mode: 'observation_only', requiresTradingServiceRestart: true };
 }
 if (require.main === module) {

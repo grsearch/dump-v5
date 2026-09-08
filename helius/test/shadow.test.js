@@ -42,7 +42,7 @@ test('exit research preserves baseline labels and archives missing variant exits
   }
   assert.deepEqual(enabled.records.filter(r => r.type === 'outcome'), disabled.records.filter(r => r.type === 'outcome'));
   const variants = enabled.records.filter(r => r.type === 'exit_comparison');
-  assert.equal(variants.length, 3); assert.ok(variants.some(r => r.variant === 'exit_1000ms' && r.status === 'censored'));
+  assert.equal(variants.length, 4); assert.ok(variants.some(r => r.variant === 'exit_1000ms' && r.status === 'censored'));
   assert.equal(enabled.tracker.active.size, 0);
 });
 
@@ -68,7 +68,7 @@ test('sample is written before outcome, with no fabricated probability when no m
   const sample = records.find(r => r.type === 'sample');
   assert.ok(sample.features.ready); assert.equal(sample.prediction.status, 'no_model'); assert.equal(sample.prediction.probability, null);
   assert.equal(sample.selection.arms.risk.status, 'unknown');
-  assert.equal(sample.observationVersion, 'selection-v1');
+  assert.equal(sample.observationVersion, 'selection-v2');
   assert.equal(records.filter(r => r.type === 'outcome').length, 0);
   assert.ok(sample.features.lastHistorySequence < sample.sequence);
 });

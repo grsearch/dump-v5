@@ -21,14 +21,15 @@ async function loadDataset(directory, target, wantedPolicy) {
           || !FEATURE_NAMES.every(k => Number.isFinite(r.features.values[k]))) { invalid = true; continue; }
         rows.set(r.id, { id: r.id, key: r.key, at: r.at, mint: r.source?.mint, pool: r.source?.pool, policyId: r.policyId, values: r.features.values });
       }
-      if (r.type === 'outcome' && r.target === (['loss_25', 'net_return'].includes(target) ? 'strategy_proxy' : target) && rows.has(r.id)) {
+      if (r.type === 'outcome' && r.target === (['loss_25', 'net_return'].includes(target) ? 'strategy_proxy' : target === 'drawdown_60s_25' ? 'rebound_60s' : target) && rows.has(r.id)) {
         const row = rows.get(r.id);
         if (r.status === 'observed_proxy' && [0, 1].includes(r.label) && Number.isFinite(r.at) && r.at >= row.at && r.policyId === row.policyId) {
-          const minEnd = target === 'rebound_30s' ? row.at + 30000 : target === 'rebound_60s' ? row.at + 60000 : row.at;
+          const minEnd = target === 'rebound_30s' ? row.at + 30000 : ['rebound_60s', 'drawdown_60s_25'].includes(target) ? row.at + 60000 : row.at;
           if (r.at < minEnd || row.y !== undefined) { invalid = true; continue; }
           if (['loss_25', 'net_return'].includes(target) && (!Number.isFinite(r.netPnlSol) || !Number.isFinite(r.entryCostSol) || r.entryCostSol <= 0)) continue;
+          if (target === 'drawdown_60s_25' && !Number.isFinite(r.minNetPct)) continue;
           const netReturn = Number.isFinite(r.netPnlSol) && r.entryCostSol > 0 ? r.netPnlSol / r.entryCostSol : null;
-          Object.assign(row, { y: target === 'loss_25' ? Number(netReturn <= -0.25) : target === 'net_return' ? netReturn : r.label,
+          Object.assign(row, { y: target === 'drawdown_60s_25' ? Number(r.minNetPct <= -25) : target === 'loss_25' ? Number(netReturn <= -0.25) : target === 'net_return' ? netReturn : r.label,
             endAt: r.at, netPnlSol: r.netPnlSol, netReturn });
         }
       }
@@ -134,7 +135,7 @@ function train(rows, target, policyId) {
   const trainingMints = new Set([...split.train, ...split.calibration].map(r => r.mint));
   const unseen = split.test.map((r, i) => ({ r, p: p[i] })).filter(x => !trainingMints.has(x.r.mint));
   return { model, report: { status: passed ? 'experimental_validation_passed' : 'validation_failed', counts,
-    validation: model.validation, coverage, economics: economics(split.test, p, target === 'loss_25' ? p => p < 0.5 : p => p >= 0.5),
+    validation: model.validation, coverage, economics: economics(split.test, p, ['loss_25', 'drawdown_60s_25'].includes(target) ? p => p < 0.5 : p => p >= 0.5),
     unseenMintTest: metrics(unseen.map(x => x.p), unseen.map(x => x.r.y)),
     warning: 'One historical holdout is not proof of live profitability. Never select thresholds on this test set and report them as new validation.' } };
 }

@@ -46,12 +46,14 @@ class Tracker {
     if (this.riskModel.model && this.riskModel.model.target !== 'loss_25') { this.riskModel.model = null; this.riskModel.status = 'wrong_target'; }
     if (this.returnModel.model && this.returnModel.model.target !== 'net_return') { this.returnModel.model = null; this.returnModel.status = 'wrong_target'; }
     this.exitComparisons = c.exitComparisons ? new ExitComparisons(c, r => this.emit(r)) : null;
+    this.drawdownModel = new Model(c.drawdownModelFile, this.policyId);
+    if (this.drawdownModel.model && this.drawdownModel.model.target !== 'drawdown_60s_25') { this.drawdownModel.model = null; this.drawdownModel.status = 'wrong_target'; }
     this.experiments = new Experiments(c, this.now());
     this.ages = new Age();
     this.active = new Map(); this.byPool = new Map(); this.lastOrder = new Map(); this.seen = new Map();
     this.sequence = 0; this.connected = false; this.lastGlobalAt = 0; this.samples = 0; this.outcomes = 0; this.censored = 0;
     this.write({ type: 'session', schema: 1, runId, at: this.now(), policy: this.policy, policyId: this.policyId,
-      modelStatus: this.model.status, riskModelStatus: this.riskModel.status, returnModelStatus: this.returnModel.status,
+      drawdownModelStatus: this.drawdownModel.status, modelStatus: this.model.status, riskModelStatus: this.riskModel.status, returnModelStatus: this.returnModel.status,
       exitComparisonVersion: this.exitComparisons ? 1 : null, source: 'processed_pumpswap_swaps', observationalOnly: true });
   }
   emit(record) { this.write({ schema: 1, runId: this.runId, policyId: this.policyId, ...record }); }
@@ -101,11 +103,11 @@ class Tracker {
         horizons: { rebound_30s: { ms: 30000, hit: false, maxNetPct: null, minNetPct: null },
           rebound_60s: { ms: 60000, hit: false, maxNetPct: null, minNetPct: null } }, strategyDone: false, exitPending: null };
       this.samples++;
-      sample.objectivePredictions = { loss25: this.riskModel.predict(snapshot, at), netReturn: this.returnModel.predict(snapshot, at) };
-      sample.selection = selection(sample.experiments, sample.objectivePredictions, fresh);
+      sample.objectivePredictions = { drawdown60: this.drawdownModel.predict(snapshot, at), loss25: this.riskModel.predict(snapshot, at), netReturn: this.returnModel.predict(snapshot, at) };
+      sample.selection = selection(sample.experiments, sample.objectivePredictions, fresh, sample.prediction);
       this.emit({ type: 'sample', id, key, at, source: sample.source, sequence: this.sequence,
         features: snapshot, prediction: sample.prediction, objectivePredictions: sample.objectivePredictions, experiments: sample.experiments,
-        selection: sample.selection, runStartedAt: this.runStartedAt, observationVersion: 'selection-v1',
+        selection: sample.selection, runStartedAt: this.runStartedAt, observationVersion: 'selection-v2',
         age: this.ages.snapshot(s, at), decisionFresh: fresh, policy: this.policy });
       if (!fresh || !this.connected) this.finishIncomplete(sample, !fresh ? 'stale_candidate' : 'stream_not_continuous', at);
       else if (this.active.size >= this.c.maxActive) this.finishIncomplete(sample, 'active_capacity', at);
@@ -123,7 +125,7 @@ class Tracker {
     this.emit({ type: 'outcome', id: sample.id, key: sample.key, target, at, ...fields });
     if (target === 'strategy_proxy') this.emit({ type: 'execution_comparison', comparisonVersion: 1,
       id: sample.id, key: sample.key, at, experiments: sample.experiments, prediction: sample.prediction, objectivePredictions: sample.objectivePredictions,
-      executionPolicy: this.policy, selection: sample.selection, runStartedAt: this.runStartedAt, observationVersion: 'selection-v1', ...fields });
+      executionPolicy: this.policy, selection: sample.selection, runStartedAt: this.runStartedAt, observationVersion: 'selection-v2', ...fields });
   }
   finishIncomplete(sample, reason, at) {
     this.exitComparisons?.censor(sample, reason, at);
@@ -203,6 +205,6 @@ class Tracker {
   stats() { return { samples: this.samples, outcomes: this.outcomes, censored: this.censored, active: this.active.size,
     migrationAge: { ...this.ages.counters, cachedPools: this.ages.pools.size },
     historyPools: this.features.pools.size, historyEvents: this.features.total, historyEvictions: this.features.evictions, model: this.model.status,
-    riskModel: this.riskModel.status, returnModel: this.returnModel.status, exitComparisons: !!this.exitComparisons }; }
+    drawdownModel: this.drawdownModel.status, riskModel: this.riskModel.status, returnModel: this.returnModel.status, exitComparisons: !!this.exitComparisons }; }
 }
 module.exports = { Tracker, assumptions, policyId, buyQuote, liquidation, liquidationDetails };

@@ -9,7 +9,7 @@ async function main() {
     options[args[i]] = args[i + 1];
   }
   const target = options['--target'] || 'rebound_60s';
-  if (!['rebound_30s', 'rebound_60s', 'strategy_proxy', 'loss_25', 'net_return'].includes(target)) throw new Error('Unknown target');
+  if (!['rebound_30s', 'rebound_60s', 'strategy_proxy', 'loss_25', 'net_return', 'drawdown_60s_25'].includes(target)) throw new Error('Unknown target');
   const directory = path.resolve(options['--data'] || path.join(__dirname, '../data/shadow'));
   const out = path.resolve(options['--out'] || path.join(__dirname, '../data/models/shadow.json'));
   const dataset = await loadDataset(directory, target, options['--policy']);

@@ -62,6 +62,7 @@ function readConfig(env = process.env) {
       directory: path.resolve(__dirname, '..', env.SHADOW_DIRECTORY || 'data/shadow'),
       modelFile: env.SHADOW_MODEL_FILE ? path.resolve(__dirname, '..', env.SHADOW_MODEL_FILE) : null,
       riskModelFile: env.SHADOW_RISK_MODEL_FILE ? path.resolve(__dirname, '..', env.SHADOW_RISK_MODEL_FILE) : null,
+      drawdownModelFile: env.SHADOW_DRAWDOWN_MODEL_FILE ? path.resolve(__dirname, '..', env.SHADOW_DRAWDOWN_MODEL_FILE) : null,
       returnModelFile: env.SHADOW_RETURN_MODEL_FILE ? path.resolve(__dirname, '..', env.SHADOW_RETURN_MODEL_FILE) : null,
       exitComparisons: bool('SHADOW_EXIT_COMPARISONS', true),
       maxActive: num('SHADOW_MAX_ACTIVE', 1000, 1, 10000, true),

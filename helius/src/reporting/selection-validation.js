@@ -25,12 +25,14 @@ function finish(b) {
     selectedMissingRate: b.pass ? (b.pass - b.selectedKnown) / b.pass : null,
     pairedDifferenceSol: b.pairedCandidates ? b.filteredPairedSol - b.baselinePairedSol : null };
 }
-function selectionValidation(samples, outcomes, window) {
+function selectionValidation(samples, outcomes, window, exitComparisons = new Map()) {
+  const exitsById = new Map();
+  for (const r of exitComparisons.values()) { const list = exitsById.get(r.id) || []; list.push(r); exitsById.set(r.id, list); }
   const start = Date.parse(window.start), end = Date.parse(window.endExclusive), groups = new Map(), unique = new Map(), conflicts = new Set();
   let legacySamples = 0, duplicates = 0;
   for (const s of samples.values()) {
     if (!(s.at >= start && s.at < end)) continue;
-    if (!s.selection || s.selection.version !== 1) { legacySamples++; continue; }
+    if (!s.selection || ![1, 2].includes(s.selection.version)) { legacySamples++; continue; }
     const key = `${s.runId}:${s.key}`, o = outcomes.get(`${s.id}:strategy_proxy`);
     if (unique.has(key)) {
       duplicates++; const prev = unique.get(key);
@@ -42,15 +44,39 @@ function selectionValidation(samples, outcomes, window) {
     const meta = { runId: s.runId, runStartedAt: s.runStartedAt ?? null, observationVersion: s.observationVersion ?? null,
       policyId: s.policyId, selectionId: s.selection.selectionId, marketExperimentId: s.selection.marketExperimentId, modelIds: s.selection.modelIds };
     const groupKey = JSON.stringify(meta); let g = groups.get(groupKey);
-    if (!g) { g = { ...meta, rules: s.selection.rules, arms: {}, byBeijingHour: {} }; groups.set(groupKey, g); }
+    if (!g) { g = { ...meta, rules: s.selection.rules, arms: {}, reboundBySelection: {}, exitsBySelection: {}, byBeijingHour: {} }; groups.set(groupKey, g); }
     const hour = new Date(s.at + 8 * 3600000).toISOString().slice(0, 13) + ':00+08:00';
-    for (const name of ['baseline', 'market', 'risk', 'net', 'combined']) {
+    for (const name of Object.keys(s.selection.arms)) {
       const arm = s.selection.arms[name] || { status: 'unknown' };
       add(g.arms[name] ||= bucket(), s, o, arm);
+      if (arm.status === 'pass') {
+        const b = g.reboundBySelection[name] ||= { selected: 0, known: 0, rebound: 0, drawdown25: 0, both: 0, unknown: 0 };
+        b.selected++;
+        const h = outcomes.get(s.id + ':rebound_60s');
+        if (h?.policyId === s.policyId && h.at >= s.at + 60000 && h.status === 'observed_proxy' && [0, 1].includes(h.label) && Number.isFinite(h.minNetPct)) {
+          b.known++; b.rebound += h.label; b.drawdown25 += Number(h.minNetPct <= -25); b.both += Number(h.label === 1 && h.minNetPct <= -25);
+        } else b.unknown++;
+        const variants = g.exitsBySelection[name] ||= {};
+        for (const variant of ['exit_250ms', 'exit_1000ms', 'net_take5', 'no_fixed_stop']) {
+          const v = variants[variant] ||= { selected: 0, paired: 0, missingOrUnpaired: 0, baselineSol: 0, variantSol: 0, differenceSol: 0, deepLoss50: 0, deepLossKnown: 0 };
+          v.selected++;
+          const e = (exitsById.get(s.id) || []).find(e => e.variant === variant && e.comparisonVersion === 1);
+          const valid = r => r?.policyId === s.policyId && r.at >= s.at && r.status === 'observed_proxy' && Number.isFinite(r.netPnlSol);
+          if (valid(e) && valid(o)) { v.paired++; v.baselineSol += o.netPnlSol; v.variantSol += e.netPnlSol; v.differenceSol += e.netPnlSol - o.netPnlSol;
+            if (Number.isFinite(e.entryCostSol) && e.entryCostSol > 0) { v.deepLossKnown++; v.deepLoss50 += Number(e.netPnlSol / e.entryCostSol <= -0.5); }
+          } else v.missingOrUnpaired++;
+        }
+      }
       const h = g.byBeijingHour[hour] ||= {}; add(h[name] ||= bucket(), s, o, arm);
     }
   }
   for (const g of groups.values()) {
+    for (const b of Object.values(g.reboundBySelection)) {
+      b.reboundRate = b.known ? b.rebound / b.known : null; b.drawdown25Rate = b.known ? b.drawdown25 / b.known : null;
+    }
+    for (const variants of Object.values(g.exitsBySelection)) for (const v of Object.values(variants)) {
+      if (!v.paired) v.baselineSol = v.variantSol = v.differenceSol = null;
+    }
     g.arms = Object.fromEntries(Object.entries(g.arms).map(([k, b]) => [k, finish(b)]));
     for (const h of Object.values(g.byBeijingHour)) for (const name of Object.keys(h)) h[name] = finish(h[name]);
   }

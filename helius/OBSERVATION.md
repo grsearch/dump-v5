@@ -39,7 +39,7 @@ paper_sell、sell_submitted、确认记录增加诊断：首次触发时间、�
 
 ## 性能与归档
 
-模型、对照与年龄缓存都在原观察线程运行；新增数据复用行情，不增加 Helius 请求。买入路径不等待模型、年龄查询或实验结果。每个策略目标多一条 comparison 日志，增加本地磁盘和归档体积；年龄缓存写盘也共享机器资源。日报及小时归档自动包含这些记录，不需要改变 COS 定时器。87 项本地测试通过，包括迁移事件及指令联合认证、未知年龄、时序隔离、观察缺失、对照版本、钱包阻塞诊断及归档分组。
+模型、对照与年龄缓存都在原观察线程运行；新增数据复用行情，不增加 Helius 请求。买入路径不等待模型、年龄查询或实验结果。每个策略目标多一条 comparison 日志，增加本地磁盘和归档体积；年龄缓存写盘也共享机器资源。日报及小时归档自动包含这些记录，不需要改变 COS 定时器。92 项本地测试通过，包括迁移事件及指令联合认证、未知年龄、时序隔离、观察缺失、对照版本、钱包阻塞诊断及归档分组。
 
 ## 2026-09-08：迁移诊断与执行差额拆分
 
@@ -115,13 +115,18 @@ SHADOW_EXIT_COMPARISONS=true
 
 准备工具会将观察起点设为准备时刻和模型已用标签截止时间的较晚者。模型不热更新，需正常重启服务读取配置；模型无效、目标错误、历史不足或分布外时不给评分。sample / execution_comparison 新增 `objectivePredictions.loss25`、`objectivePredictions.netReturn`；shadow_health 提供两个模型状态。未配置时如实显示 no_model。
 
-## 三组固定退出对照
+## 四组固定退出对照
 
 所有对照共享原策略的模拟入场金额、时间与成本：
 
 1. `exit_250ms`：原退出触发逻辑，等待至少 250ms 后的第一条可见行情估算退出。
 2. `exit_1000ms`：原退出触发逻辑，等待至少 1000ms。
 3. `net_take5`：估计净收益达到 5% 时增加提前止盈触发，退出延迟沿用 SHADOW_EXIT_DELAY_MS；保留原止损、追踪和超时退出逻辑。
+4. `no_fixed_stop`：仅禁用固定价格止损，保留原止盈、追踪和 maxHoldMs（默认30分钟），沿用原退出延迟与成本。独立于 paper/live 订单执行，原止损参数不变。
+
+新对照对所有已模拟入场候选采集，后续按候选买前特征或事先冻结的反弹评分分组；不能按未来是否反弹挑选样本。记录 entryCostSol、minNetPct/maxNetPct（观察持有期间相对入场成本的最低/最高净收益，非峰谷最大回撤）、firstFixedStopAt（首次触及原价格止损线）。评估时按同一候选配对原策略，统计原止损后改善/恶化、最终收益、深亏、持仓时间及缺失比例；未卖出、断流、不可报价不算回本。
+
+这条新方案可能延长观察并占用采集容量，尤其是不再止损后长期无反弹的样本。最长持仓只触发退出意图，须等待延迟后的可见报价；缺报价仍为删失，不能把最后价格当作强制成交。不会补出旧版本已经停止采集的后续走势。
 
 触发时价格不能当成交价，没有及时可见行情则删失。对照属于 `exit_comparison` 独立记录，不改 strategy_proxy 的定义或 policyId。quality.json 的 `audit.exitComparisons` 按策略、版本、方案聚合已完成记录，并提供与同一候选原策略配对的差额；尚未完成的方案不在完成合计内。不能比较不同样本集合的总额后声称收益改善。
 
@@ -129,7 +134,7 @@ SHADOW_EXIT_COMPARISONS=true
 
 ## 本次验证与实际数据试训
 
-87 项测试通过，覆盖运行时一致过滤、收益单位、缺失金额拒绝、未来时间隔离、退出延迟、缺失对照、原标签不变及归档配对。本机 6400 条合成事件主线程入队 p95 约 0.0025ms，0 丢弃；不包含网络和观察线程计算，不能作为买入延迟承诺。
+92 项测试通过，覆盖运行时一致过滤、收益单位、缺失金额拒绝、未来时间隔离、退出延迟、缺失对照、原标签不变及归档配对。本机 6400 条合成事件主线程入队 p95 约 0.0025ms，0 丢弃；不包含网络和观察线程计算，不能作为买入延迟承诺。
 
 9 月 8 日 7 点归档试训：两个新目标各 1273 条有效记录。loss_25 测试 Brier 0.18894 / 常数基线 0.19184；net_return 测试 MSE 0.05809 / 基线 0.05878，MAE 反而较差（0.20150 / 0.19343）。改进很小，且固定正收益预测筛选的 25 条已知结果仍为 -0.4305 SOL，不证明可盈利。私人数据、报告、模型保留本地，不进入发行包或 GitHub。
 # AGE 原生 SOL 报价兼容修复
@@ -154,3 +159,24 @@ Pump 官方 COIN_CREATION.md 说明：SOL 报价的 bonding_curve.quote_mint 使
 配对字段 baselinePairedSol / filteredPairedSol 仅使用决策已知且策略收益已知的同一批候选：通过者保留原收益，拒绝者作为未下单、收益为零；pairedDifferenceSol 为两者差额。此处是固定过滤的候选级反事实对照，不模拟资金、并发持仓、后续信号变化或实际成交。必须同时看 meanSelectedNetSol、selectedMissingRate 和 severeLossRate，不能仅以少交易后的总亏损减少认定有效。完全没有已知收益时 selectedNetSol 为 null。
 
 报告不自动批准实盘，不在线搜索阈值、不改模型。完整测试覆盖缺模型未知、严格边界、版本分组、同候选配对、缺失结果、重复冲突和旧窗口隔离。
+
+## 双评分跨时段观察（selection-v2）
+
+新增训练目标 drawdown_60s_25：从完整 rebound_60s 结果的 minNetPct <= -25 派生；缺失、删失、观察不足60秒不填标签。该目标与 loss_25（策略最终平仓净亏损25%）不同。
+
+训练命令：
+
+~~~bash
+node helius/scripts/train-shadow.js --data helius/data/shadow --target rebound_60s --out helius/data/models/rebound60.json
+node helius/scripts/train-shadow.js --data helius/data/shadow --target drawdown_60s_25 --out helius/data/models/drawdown60.json
+node helius/scripts/prepare-observation-model.js helius/data/models/rebound60.json
+node helius/scripts/prepare-observation-model.js helius/data/models/drawdown60.json
+~~~
+
+准备工具验证策略口径、模型验证结果，并把观察起点移至准备时刻之后；按输出分别设置 SHADOW_MODEL_FILE 与 SHADOW_DRAWDOWN_MODEL_FILE。模型可用后重启才加载。模型属于私有运行文件，不进入Git或公共发行包；只更新代码不能自动得到训练好的评分。旧模型不匹配、缺失或超训练范围时明确unknown，不允许按低风险放行。
+
+固定观察组 joint：新鲜候选、rebound_60s概率>=0.60且drawdown_60s_25概率<0.25。highRebound：新鲜候选、rebound_60s概率>=0.80，用于检查高反弹组的无固定止损对照。不叠加旧combined组的金额/流量/净收益限制；各组定义独立，避免混淆实验。所有筛选仅写盘，不改变引擎下单、仓位或买卖阈值。
+
+sample / execution_comparison 记录 objectivePredictions.drawdown60；原prediction提供反弹评分。selection.version=2、observationVersion=selection-v2，记录两模型ID和固定规则。exit_comparison带买前selection，不能用事后涨跌挑样本。shadow_health.drawdownModel与session.drawdownModelStatus可核查是否已加载。
+
+quality.json 的 audit.selectionValidation.groups 每组新增 reboundBySelection（完整60秒的反弹/大跌/两者都发生/未知），exitsBySelection（同候选原策略与四种退出对照的配对收益、差额、50%深亏、未配对数）。按运行、策略、规则及模型ID分组，兼容旧v1。无完整配对时金额为null，不把缺失结果当作0收益或回本。归档出口自动包含新字段，无需调整北京时间7点的定时任务。
