@@ -2,6 +2,9 @@
 const schema = require('./migration-layout.json');
 const { PUMP, WSOL } = require('./config');
 const TAG = Buffer.from([228, 69, 165, 46, 81, 203, 154, 29]);
+// Pump uses Pubkey::default() for native SOL quote state/events. The AMM
+// instruction must still explicitly reference WSOL (see COIN_CREATION.md).
+const NATIVE_SOL_QUOTE = '11111111111111111111111111111111';
 
 // Attribute data to runtime invocation frames, never arbitrary Program log strings.
 function programData(logs, program) {
@@ -45,7 +48,7 @@ function migrations(tx, decode, emit, diagnostic = () => {}) {
       const quote = account(spec.name === 'migrate_v2' ? 'quote_mint' : 'wsol_mint');
       const checks = { mint: mint === e.mint, pool: account('pool') === e.pool,
         pumpAmm: account('pump_amm') === PUMP, quote: quote === WSOL,
-        eventQuote: !e.quote_mint || e.quote_mint === WSOL };
+        eventQuote: e.quote_mint === undefined || e.quote_mint === WSOL || e.quote_mint === NATIVE_SOL_QUOTE };
       return { instruction: spec.name, accountCount: ix.accounts.length, mint, pool: account('pool'),
         pumpAmm: account('pump_amm'), quote, checks, matched: Object.values(checks).every(Boolean) };
     });
@@ -57,9 +60,11 @@ function migrations(tx, decode, emit, diagnostic = () => {}) {
     }
     const key = `${e.pool}:${e.mint}:${e.timestamp}`;
     if (seen.has(key)) continue; seen.add(key); accepted++;
+    if (e.quote_mint === NATIVE_SOL_QUOTE) diagnostic({ stage: 'migration_native_sol_quote_matched', count: 1 });
     emit({ pool: e.pool, mint: e.mint, createdAt: Number(e.timestamp) * 1000, migrationAt: Number(e.timestamp) * 1000,
       observedAt: tx.receivedAt || Date.now(), signature: tx.signature, slot: tx.slot,
-      source: 'pump_migrate_processed', evidenceTransport: transport });
+      source: 'pump_migrate_processed', evidenceTransport: transport,
+      eventQuoteMint: e.quote_mint ?? null, instructionQuoteMint: WSOL });
   }
   diagnostic({ stage: accepted ? 'migration_matched' : 'migration_without_matching_completion', count: accepted || 1,
     signature: tx.signature, logsAvailable: Array.isArray(tx.meta.logMessages) });
