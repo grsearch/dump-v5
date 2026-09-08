@@ -67,6 +67,8 @@ test('sample is written before outcome, with no fabricated probability when no m
   tracker.onSwap(swap(60000, { side: 'sell' }), true, true);
   const sample = records.find(r => r.type === 'sample');
   assert.ok(sample.features.ready); assert.equal(sample.prediction.status, 'no_model'); assert.equal(sample.prediction.probability, null);
+  assert.equal(sample.selection.arms.risk.status, 'unknown');
+  assert.equal(sample.observationVersion, 'selection-v1');
   assert.equal(records.filter(r => r.type === 'outcome').length, 0);
   assert.ok(sample.features.lastHistorySequence < sample.sequence);
 });

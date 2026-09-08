@@ -6,6 +6,7 @@ const { exitReason } = require('../strategy');
 const { Experiments } = require('./experiments');
 const { Age } = require('./age');
 const { ExitComparisons } = require('./exit-comparisons');
+const { selection } = require('./selection');
 
 function assumptions(c) {
   return { version: 1, sizeSol: c.sizeSol, takeProfit: c.takeProfit, stopLoss: c.stopLoss, trailArm: c.trailArm,
@@ -38,6 +39,7 @@ function liquidation(s, amount, c) { return liquidationDetails(s, amount, c)?.ne
 class Tracker {
   constructor(c, write, { runId = crypto.randomUUID(), now = Date.now } = {}) {
     this.c = c; this.write = write; this.runId = runId; this.now = now;
+    this.runStartedAt = this.now();
     this.policy = assumptions(c); this.policyId = policyId(this.policy);
     this.features = new Features(c); this.model = new Model(c.modelFile, this.policyId);
     this.riskModel = new Model(c.riskModelFile, this.policyId); this.returnModel = new Model(c.returnModelFile, this.policyId);
@@ -100,8 +102,10 @@ class Tracker {
           rebound_60s: { ms: 60000, hit: false, maxNetPct: null, minNetPct: null } }, strategyDone: false, exitPending: null };
       this.samples++;
       sample.objectivePredictions = { loss25: this.riskModel.predict(snapshot, at), netReturn: this.returnModel.predict(snapshot, at) };
+      sample.selection = selection(sample.experiments, sample.objectivePredictions, fresh);
       this.emit({ type: 'sample', id, key, at, source: sample.source, sequence: this.sequence,
         features: snapshot, prediction: sample.prediction, objectivePredictions: sample.objectivePredictions, experiments: sample.experiments,
+        selection: sample.selection, runStartedAt: this.runStartedAt, observationVersion: 'selection-v1',
         age: this.ages.snapshot(s, at), decisionFresh: fresh, policy: this.policy });
       if (!fresh || !this.connected) this.finishIncomplete(sample, !fresh ? 'stale_candidate' : 'stream_not_continuous', at);
       else if (this.active.size >= this.c.maxActive) this.finishIncomplete(sample, 'active_capacity', at);
@@ -119,7 +123,7 @@ class Tracker {
     this.emit({ type: 'outcome', id: sample.id, key: sample.key, target, at, ...fields });
     if (target === 'strategy_proxy') this.emit({ type: 'execution_comparison', comparisonVersion: 1,
       id: sample.id, key: sample.key, at, experiments: sample.experiments, prediction: sample.prediction, objectivePredictions: sample.objectivePredictions,
-      executionPolicy: this.policy, ...fields });
+      executionPolicy: this.policy, selection: sample.selection, runStartedAt: this.runStartedAt, observationVersion: 'selection-v1', ...fields });
   }
   finishIncomplete(sample, reason, at) {
     this.exitComparisons?.censor(sample, reason, at);

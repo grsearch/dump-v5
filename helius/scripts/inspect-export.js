@@ -155,6 +155,7 @@ async function inspect(directory) {
   if (Object.keys(audit.policies).length > 1) audit.warnings.push('Multiple policies: train and evaluate separately.');
   if (audit.paper.closed) audit.warnings.push('Paper PnL is gross spot simulation, excluding execution impact, fees and delay; proxy delay is not live buy latency.');
   if (!Object.values(targets).some(t => Object.values(t.policies).some(p => p.meetsTrainingMinimum))) audit.warnings.push('No target/policy meets the training minimum.');
+  audit.selectionValidation = require('../src/reporting/selection-validation').selectionValidation(samples, outcomes, summary.window);
   return { integrity: 'verified', lines, window: summary.window, snapshotAt: summary.snapshotAt, windowRecords: summary.stats.windowRecords,
     configSizeSol: summary.config?.sizeSol, sampleRecords: samples.size, counts, targets, audit, dataQuality: summary.dataQuality,
     note: 'Training minimum is not validation of predictive performance. Snapshots alone are not training samples.' };

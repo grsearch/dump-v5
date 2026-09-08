@@ -39,7 +39,7 @@ paper_sell、sell_submitted、确认记录增加诊断：首次触发时间、�
 
 ## 性能与归档
 
-模型、对照与年龄缓存都在原观察线程运行；新增数据复用行情，不增加 Helius 请求。买入路径不等待模型、年龄查询或实验结果。每个策略目标多一条 comparison 日志，增加本地磁盘和归档体积；年龄缓存写盘也共享机器资源。日报及小时归档自动包含这些记录，不需要改变 COS 定时器。84 项本地测试通过，包括迁移事件及指令联合认证、未知年龄、时序隔离、观察缺失、对照版本、钱包阻塞诊断及归档分组。
+模型、对照与年龄缓存都在原观察线程运行；新增数据复用行情，不增加 Helius 请求。买入路径不等待模型、年龄查询或实验结果。每个策略目标多一条 comparison 日志，增加本地磁盘和归档体积；年龄缓存写盘也共享机器资源。日报及小时归档自动包含这些记录，不需要改变 COS 定时器。87 项本地测试通过，包括迁移事件及指令联合认证、未知年龄、时序隔离、观察缺失、对照版本、钱包阻塞诊断及归档分组。
 
 ## 2026-09-08：迁移诊断与执行差额拆分
 
@@ -129,7 +129,7 @@ SHADOW_EXIT_COMPARISONS=true
 
 ## 本次验证与实际数据试训
 
-84 项测试通过，覆盖运行时一致过滤、收益单位、缺失金额拒绝、未来时间隔离、退出延迟、缺失对照、原标签不变及归档配对。本机 6400 条合成事件主线程入队 p95 约 0.0025ms，0 丢弃；不包含网络和观察线程计算，不能作为买入延迟承诺。
+87 项测试通过，覆盖运行时一致过滤、收益单位、缺失金额拒绝、未来时间隔离、退出延迟、缺失对照、原标签不变及归档配对。本机 6400 条合成事件主线程入队 p95 约 0.0025ms，0 丢弃；不包含网络和观察线程计算，不能作为买入延迟承诺。
 
 9 月 8 日 7 点归档试训：两个新目标各 1273 条有效记录。loss_25 测试 Brier 0.18894 / 常数基线 0.19184；net_return 测试 MSE 0.05809 / 基线 0.05878，MAE 反而较差（0.20150 / 0.19343）。改进很小，且固定正收益预测筛选的 25 条已知结果仍为 -0.4305 SOL，不证明可盈利。私人数据、报告、模型保留本地，不进入发行包或 GitHub。
 # AGE 原生 SOL 报价兼容修复
@@ -139,3 +139,18 @@ Pump 官方 COIN_CREATION.md 说明：SOL 报价的 bonding_curve.quote_mint 使
 新增累计计数 migration_native_sol_quote_matched。更新后应检查该计数或 migration_matched 增长、worker accepted/cachedPools 增长；只有随后涉及已缓存池的候选才会出现已知 AGE。不会将老样本 unknown 改成已知，也不会用代币创建时间或首次看到时间替代毕业迁移时间。
 
 官方依据：https://github.com/pump-fun/pump-public-docs/blob/main/docs/instructions/COIN_CREATION.md 。默认公钥在事件中的兼容依据还包括用户提供的真实诊断；测试覆盖 migrate/migrate_v2、默认事件报价、显式 WSOL、旧事件缺字段、账户不符和非 SOL 拒绝。服务器实际恢复需更新后观察新迁移确认。
+# 固定组合筛选与自动验证报告
+
+新增 selection-v1 观察版本：每个候选产生固定的 baseline、market、risk、net、combined 五组结果。baseline 检查信号新鲜度；market 再检查现有卖单上限和持续卖压；risk 要求 loss_25 概率 <0.25；net 要求预期净收益率 >0；combined 同时满足全部条件。这些是预先固定的研究阈值，不代表已优化参数，不控制 paper 或真实订单，也不增加 RPC。
+
+`sample.selection` 和 `execution_comparison.selection` 保存筛选版本哈希、规则、市场过滤版本、风险与收益模型 ID、逐项检查和拒绝/未知原因。模型未加载、目标不符、分布外或历史不足时不将模型项标为通过。组合已有明确失败项时为 reject，其余缺失项仍保留在 unknown 列表；没有失败项但有缺失则为 unknown。
+
+本次不自动安装或启用训练模型。服务器仍需按上面的准备模型流程分别配置 SHADOW_RISK_MODEL_FILE / SHADOW_RETURN_MODEL_FILE 并重启。未配置时市场对照可运行，模型组合会如实记录未知。
+
+每日 COS 和手动导出的 `quality.json` 自动新增 `audit.selectionValidation`。无需更改上传定时器或文件清单。按以下字段隔离：runId、runStartedAt、observationVersion、policyId、selectionId、marketExperimentId 和 modelIds。runStartedAt 是本次观察进程启动时刻，不等于 Git 部署版本证明。
+
+每组提供通过、拒绝、未知决策、已知收益、删失、待完成、大亏比例、胜率、每候选净收益和北京时间分小时统计。大亏定义为已知最终净损失占入场成本至少 25%。旧记录没有 selection 时计入 legacySamples，不按新规则事后补造选择结果。候选按归档时间窗归属；更新前上下文不混入新窗口。同一进程重复 chain key 去重，冲突样本剔除。
+
+配对字段 baselinePairedSol / filteredPairedSol 仅使用决策已知且策略收益已知的同一批候选：通过者保留原收益，拒绝者作为未下单、收益为零；pairedDifferenceSol 为两者差额。此处是固定过滤的候选级反事实对照，不模拟资金、并发持仓、后续信号变化或实际成交。必须同时看 meanSelectedNetSol、selectedMissingRate 和 severeLossRate，不能仅以少交易后的总亏损减少认定有效。完全没有已知收益时 selectedNetSol 为 null。
+
+报告不自动批准实盘，不在线搜索阈值、不改模型。完整测试覆盖缺模型未知、严格边界、版本分组、同候选配对、缺失结果、重复冲突和旧窗口隔离。
