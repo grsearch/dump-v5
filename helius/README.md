@@ -135,7 +135,7 @@ journalctl -u dump-sniper -f
 
 本地测试覆盖 legacy/v0/ALT 交易解析、CPI 事件归属、虚拟储备、多跳过滤、阈值、过期信号、去重、真实 SDK 买卖序列化、持仓回执、未知提交恢复、ATA 关闭权限与余额、重入计时和状态重启。测试使用合成链上数据，没有向主网发送交易。
 
-本次 92 项测试全部通过，包含新增样本时序、缺失标签、离线训练、模型校验、真实工作线程写盘及 COS 归档/重试测试；详见 [验证记录](VALIDATION.md)。发行 zip 包含独立运行所需代码、锁文件、说明和测试，不包含 node_modules、采集数据、训练模型或密钥。
+本次 99 项测试全部通过，包含新增样本时序、缺失标签、离线训练、模型校验、真实工作线程写盘及 COS 归档/重试测试；详见 [验证记录](VALIDATION.md)。发行 zip 包含独立运行所需代码、锁文件、说明和测试，不包含 node_modules、采集数据、训练模型或密钥。
 
 没有 Helius API key 或腾讯云 SSH 会话，因此本次未验证真实全网订阅权限、服务端数据样例、24h 用量、腾讯云网络延迟或小额实盘成交。默认保持模拟。若日志中长期 `transactions>0` 而 `parsedSwaps=0`，先检查事件/IDL 格式，不应直接切换实盘。
 
@@ -151,3 +151,5 @@ journalctl -u dump-sniper -f
 - [PumpSwap 官方 IDL](https://github.com/pump-fun/pump-public-docs/blob/main/idl/pump_amm.json)：`src/pump-layout.json` 为 2026-09-07 获取后提取的买卖布局。执行 SDK 固定 1.19.0，锁文件随项目交付。
 
 双评分观察支持反弹≥60%且60秒大跌风险<25%的独立筛选，以及反弹≥80%的退出对照分组；需另行加载两个冻结模型。原交易策略不变，完整配置见 OBSERVATION.md。
+
+新增长期恢复观察：池行情间隔后保留独立no_stop_recovery研究结果，原严格标签保持删失；提供install-observation-models.js安装及检查双模型。更新后按OBSERVATION.md部署并导出核对。

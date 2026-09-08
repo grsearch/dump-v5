@@ -39,7 +39,7 @@ paper_sell、sell_submitted、确认记录增加诊断：首次触发时间、�
 
 ## 性能与归档
 
-模型、对照与年龄缓存都在原观察线程运行；新增数据复用行情，不增加 Helius 请求。买入路径不等待模型、年龄查询或实验结果。每个策略目标多一条 comparison 日志，增加本地磁盘和归档体积；年龄缓存写盘也共享机器资源。日报及小时归档自动包含这些记录，不需要改变 COS 定时器。92 项本地测试通过，包括迁移事件及指令联合认证、未知年龄、时序隔离、观察缺失、对照版本、钱包阻塞诊断及归档分组。
+模型、对照与年龄缓存都在原观察线程运行；新增数据复用行情，不增加 Helius 请求。买入路径不等待模型、年龄查询或实验结果。每个策略目标多一条 comparison 日志，增加本地磁盘和归档体积；年龄缓存写盘也共享机器资源。日报及小时归档自动包含这些记录，不需要改变 COS 定时器。99 项本地测试通过，包括迁移事件及指令联合认证、未知年龄、时序隔离、观察缺失、对照版本、钱包阻塞诊断及归档分组。
 
 ## 2026-09-08：迁移诊断与执行差额拆分
 
@@ -134,7 +134,7 @@ SHADOW_EXIT_COMPARISONS=true
 
 ## 本次验证与实际数据试训
 
-92 项测试通过，覆盖运行时一致过滤、收益单位、缺失金额拒绝、未来时间隔离、退出延迟、缺失对照、原标签不变及归档配对。本机 6400 条合成事件主线程入队 p95 约 0.0025ms，0 丢弃；不包含网络和观察线程计算，不能作为买入延迟承诺。
+99 项测试通过，覆盖运行时一致过滤、收益单位、缺失金额拒绝、未来时间隔离、退出延迟、缺失对照、原标签不变及归档配对。本机 6400 条合成事件主线程入队 p95 约 0.0025ms，0 丢弃；不包含网络和观察线程计算，不能作为买入延迟承诺。
 
 9 月 8 日 7 点归档试训：两个新目标各 1273 条有效记录。loss_25 测试 Brier 0.18894 / 常数基线 0.19184；net_return 测试 MSE 0.05809 / 基线 0.05878，MAE 反而较差（0.20150 / 0.19343）。改进很小，且固定正收益预测筛选的 25 条已知结果仍为 -0.4305 SOL，不证明可盈利。私人数据、报告、模型保留本地，不进入发行包或 GitHub。
 # AGE 原生 SOL 报价兼容修复
@@ -180,3 +180,25 @@ node helius/scripts/prepare-observation-model.js helius/data/models/drawdown60.j
 sample / execution_comparison 记录 objectivePredictions.drawdown60；原prediction提供反弹评分。selection.version=2、observationVersion=selection-v2，记录两模型ID和固定规则。exit_comparison带买前selection，不能用事后涨跌挑样本。shadow_health.drawdownModel与session.drawdownModelStatus可核查是否已加载。
 
 quality.json 的 audit.selectionValidation.groups 每组新增 reboundBySelection（完整60秒的反弹/大跌/两者都发生/未知），exitsBySelection（同候选原策略与四种退出对照的配对收益、差额、50%深亏、未配对数）。按运行、策略、规则及模型ID分组，兼容旧v1。无完整配对时金额为null，不把缺失结果当作0收益或回本。归档出口自动包含新字段，无需调整北京时间7点的定时任务。
+
+## 间断后的独立长期观察（recoveryVersion=1）
+
+开启SHADOW_EXIT_COMPARISONS时，已有模拟入场且no_fixed_stop尚未完成的样本，在池行情间隔、旧行情、无法报价、断流或队列覆盖中断时，可进入独立恢复观察。原strategy_proxy、反弹标签与四组exit_comparison仍按原规则删失，不改成成功；恢复记录为no_stop_recovery，coverage=discontinuous，不供原训练目标使用。
+
+记录阶段started、first_quote、finished；后续可报价退出为discontinuous_proxy，到期仍无可报价退出、容量不足或停机为unknown，净收益为空。首次恢复报价可核对距间隔多久；minObservedNetPct/maxObservedNetPct仅是恢复后可见报价极值，不代表缺口内完整轨迹。保留缺口前已触发的退出意图，否则按后续可见报价触发止盈/追踪或按原入场时间触发最长持仓退出；无法知道缺口中是否曾触发条件，因此必须独立统计。
+
+到原maxHoldMs（默认30分钟）后，最多再等exitDelayMs+maxGapMs（默认500ms+10秒）的真实报价；到期没有报价则结束为unknown，不能用旧价强平。恢复池独立使用SHADOW_MAX_ACTIVE及SHADOW_MAX_ACTIVE_PER_POOL容量上限，不挤掉原活动样本，但最多增加同规模的研究状态，可能增加工作线程内存、CPU及行情日志；不增加Helius请求。关注shadow_health.recovery的active、capacity、expired、completed。进程重启不恢复旧研究持仓，正常关闭明确记录unknown。
+
+quality.json新增audit.noStopRecovery，按运行、策略、筛选及模型ID分别统计all/joint/highRebound的间断报价结果、未知以及同候选原策略配对金额。该汇总按恢复结束时间窗口统计，与按候选时间统计的selectionValidation不能混加，也不能与完整退出样本混作胜率。audit.modelPredictions报告模型缺失/历史不足/异常范围的数量；缺失模型时输出明确提示。COS归档增加第二模型及其他已配置观察模型快照。
+
+## 一次安装两个模型并检查
+
+先将私有模型包解压到服务器的一个目录，再在实际部署目录执行（以下使用绝对路径，按模型存放处修改）：
+
+~~~bash
+node /opt/dump-sniper/helius/scripts/install-observation-models.js /path/to/rebound60.json /path/to/drawdown60.json /opt/dump-sniper/helius/.env
+node /opt/dump-sniper/helius/scripts/install-observation-models.js --check /opt/dump-sniper/helius/.env
+sudo systemctl restart dump-sniper
+~~~
+
+安装前同时验证两个目标、策略口径、离线验证结果；验证失败不修改.env。成功后写入私有模型副本，观察起点移到安装时刻之后，备份.env并仅更新两项模型路径，去除它们的重复配置，不改金额、密钥、止盈止损。备份包含密钥，应只保留在服务器受限目录。检查非成功状态返回非零退出码。配置检查只能证明文件可加载；重启后还需在session中核对modelStatus及drawdownModelStatus都为experimental_calibrated_model、noStopRecoveryVersion=1。

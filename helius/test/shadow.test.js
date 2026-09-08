@@ -269,3 +269,19 @@ test('migration diagnostics distinguish restored evidence, received evidence and
   assert.equal(a.snapshot({pool:'p',mint:'m'},2000).migrationAgeMs,1000);
   assert.equal(a.counters.known,1);assert.equal(a.counters.unknown,1);
 });
+
+test('pool gap preserves recovery independently of censored baseline and training labels', () => {
+  const { tracker, records } = collector({ exitComparisons: true });
+  warm(tracker); tracker.onSwap(swap(60000), true, true); tracker.onSwap(swap(60500), false, true);
+  // Other pools keep global stream live while this pool is quiet.
+  tracker.onSwap(swap(65000, { pool: 'other' }), false, true);
+  tracker.onSwap(swap(70000, { pool: 'other' }), false, true); tracker.tick(71000);
+  assert.equal(tracker.active.size, 0); assert.equal(tracker.recovery.active.size, 1);
+  const labels = records.filter(r => r.type === 'outcome'); assert.ok(labels.every(r => r.status === 'censored'));
+  tracker.onSwap(swap(72000, { postQuote: '140000000000' }), false, true);
+  tracker.onSwap(swap(72500, { postQuote: '130000000000' }), false, true);
+  assert.equal(tracker.recovery.active.size, 0);
+  assert.equal(records.filter(r => r.type === 'outcome').length, labels.length);
+  assert.ok(records.some(r => r.type === 'no_stop_recovery' && r.status === 'discontinuous_proxy'));
+  assert.ok(records.filter(r => r.type === 'exit_comparison').every(r => r.status === 'censored'));
+});

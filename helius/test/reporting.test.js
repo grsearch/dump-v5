@@ -198,3 +198,24 @@ test('execution audit retains unavailable comparisons and never invents legacy c
   assert.equal(audit.totals.legacyMissingBreakdown,1);assert.equal(audit.totals.noComparison,1);
   assert.equal(audit.totals.proxyPnlSol,-.2);assert.equal(audit.rows[0].decomposition.components,undefined);
 });
+
+test('recovery archive is separate from complete exit results and reports missing models', async t => {
+  const f = fixture(t), at = f.end - 1000;
+  write(path.join(f.env.SHADOW_DIRECTORY, 'samples-test.jsonl'), [
+    { type: 'sample', schema: 1, id: 'r', key: 'k', runId: 'run', at: at - 60000, policyId: 'p', features: { ready: false }, prediction: { status: 'no_model' }, objectivePredictions: { drawdown60: { status: 'no_model' } } },
+    { type: 'no_stop_recovery', id: 'r', runId: 'run', policyId: 'p', at, phase: 'finished', coverage: 'discontinuous', status: 'discontinuous_proxy', netPnlSol: .1 },
+  ]);
+  const archive = await buildArchive({ c: f.c, outputDir: path.join(f.dir, 'exports'), end: f.end });
+  const q = await require('../scripts/inspect-export').inspect(archive.folder);
+  assert.equal(q.audit.noStopRecovery.groups[0].all.quoted, 1);
+  assert.equal(q.audit.noStopRecovery.groups[0].all.quotedNetSol, .1);
+  assert.ok(q.audit.warnings.some(x => x.includes('models are not loaded')));
+});
+
+test('archive includes both frozen observation model snapshots', async t => {
+  const f = fixture(t), b = path.join(f.dir, 'rebound.json'), d = path.join(f.dir, 'drawdown.json');
+  fs.writeFileSync(b, JSON.stringify({ target: 'rebound_60s' })); fs.writeFileSync(d, JSON.stringify({ target: 'drawdown_60s_25' }));
+  f.c.shadow.modelFile = b; f.c.shadow.drawdownModelFile = d;
+  const a = await buildArchive({ c: f.c, outputDir: path.join(f.dir, 'exports'), end: f.end });
+  assert.deepEqual(unpack(a.file).filter(r => r.dataset === 'model_snapshot').map(r => r.record.target).sort(), ['drawdown_60s_25', 'rebound_60s']);
+});

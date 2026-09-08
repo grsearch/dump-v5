@@ -115,8 +115,8 @@ async function buildArchive({ c, outputDir, end, start = end - DAY, manual = fal
       try { const data = JSON.parse(await fsp.readFile(file, 'utf8')); yield JSON.stringify({ dataset: 'state_snapshot', source: path.basename(file), record: scrub(publicState(data), secrets) }) + '\n'; }
       catch (e) { if (e.code !== 'ENOENT') throw new Error('Could not read consistent state snapshot'); }
     }
-    if (c.shadow.modelFile) {
-      for (const file of [c.shadow.modelFile, `${c.shadow.modelFile}.report.json`]) {
+    for (const modelFile of new Set([c.shadow.modelFile, c.shadow.drawdownModelFile, c.shadow.riskModelFile, c.shadow.returnModelFile].filter(Boolean))) {
+      for (const file of [modelFile, `${modelFile}.report.json`]) {
         try {
           if ((await fsp.stat(file)).size > 1024 * 1024) throw new Error('Model report exceeds 1 MB');
           yield JSON.stringify({ dataset: 'model_snapshot', source: path.basename(file), record: scrub(JSON.parse(await fsp.readFile(file, 'utf8')), secrets) }) + '\n';

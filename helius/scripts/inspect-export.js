@@ -11,6 +11,8 @@ async function inspect(directory) {
   if (await digest(file) !== summary.sha256 || fs.statSync(file).size !== summary.bytes) throw new Error('Archive checksum/size mismatch');
   const counts = {}, samples = new Map(), outcomes = new Map(); let lines = 0, bytes = 0, first = null, footer = null;
   const audit = { windowCounts: {}, coverageGapReasons: {}, featureReasons: {}, policies: {}, paper: { closed: 0, wins: 0, losses: 0, flat: 0, missingPnl: 0, grossPnlSol: 0 }, shadowHealth: { observations: 0, maxQueueDepth: 0, maxDroppedPerSession: 0, maxHistoryEvictionsPerSession: 0 } };
+  const recoveryResults = new Map();
+  audit.modelPredictions = { rebound: {}, drawdown: {} };
   const closes = new Set(), delays = [];
   const comparisons = new Map(), paperResults = new Map(), exitComparisons = new Map();
   audit.migrationPipeline = { parser: null, worker: null, cacheStatus: null, parserAt: null, workerAt: null };
@@ -52,11 +54,15 @@ async function inspect(directory) {
         if (row.dataset === 'shadow' && r.type === 'coverage_gap') inc(audit.coverageGapReasons, r.reason || 'unknown');
         if (row.dataset === 'shadow' && r.type === 'proxy_entry' && Number.isFinite(r.actualEntryDelayMs) && delays.length < 100000) delays.push(r.actualEntryDelayMs);
         if (row.dataset === 'shadow' && r.type === 'sample') {
+          inc(audit.modelPredictions.rebound, r.prediction?.status || 'absent');
+          inc(audit.modelPredictions.drawdown, r.objectivePredictions?.drawdown60?.status || 'absent');
           inc(audit.featureReasons, r.features?.ready ? 'ready' : r.features?.reason || 'missing_features');
           if (r.policyId) audit.policies[r.policyId] = r.policy;
         }
       }
       if (row.dataset !== 'shadow') continue;
+      if (r.type === 'no_stop_recovery' && inside && r.phase === 'finished') recoveryResults.set(r.id, r);
+      if (recoveryResults.size > 100000) throw new Error('Recovery inspection limit exceeded');
       if (r.type === 'sample') samples.set(r.id, r);
       if (r.type === 'outcome') outcomes.set(`${r.id}:${r.target}`, r);
       if (r.type === 'execution_comparison' && inside) comparisons.set(r.id, r);
@@ -155,6 +161,27 @@ async function inspect(directory) {
   if (Object.keys(audit.policies).length > 1) audit.warnings.push('Multiple policies: train and evaluate separately.');
   if (audit.paper.closed) audit.warnings.push('Paper PnL is gross spot simulation, excluding execution impact, fees and delay; proxy delay is not live buy latency.');
   if (!Object.values(targets).some(t => Object.values(t.policies).some(p => p.meetsTrainingMinimum))) audit.warnings.push('No target/policy meets the training minimum.');
+  audit.noStopRecovery = { scope: 'discontinuous_research_only_finish_window_not_training_or_complete_exit_profit', groups: [] };
+  const recoveryGroups = new Map();
+  for (const r of recoveryResults.values()) {
+    const meta = { runId: r.runId, policyId: r.policyId, selectionId: r.selection?.selectionId ?? null, modelIds: r.selection?.modelIds ?? null };
+    const key = JSON.stringify(meta);
+    let g = recoveryGroups.get(key); if (!g) { g = { ...meta, all: {}, joint: {}, highRebound: {} }; recoveryGroups.set(key, g); }
+    for (const name of ['all', 'joint', 'highRebound']) {
+      if (name !== 'all' && r.selection?.arms[name]?.status !== 'pass') continue;
+      const b = g[name]; b.finished = (b.finished || 0) + 1;
+      if (r.status === 'discontinuous_proxy' && Number.isFinite(r.netPnlSol)) {
+        b.quoted = (b.quoted || 0) + 1; b.quotedNetSol = (b.quotedNetSol || 0) + r.netPnlSol;
+        const o = outcomes.get(r.id + ':strategy_proxy');
+        if (o?.policyId === r.policyId && o.status === 'observed_proxy' && Number.isFinite(o.netPnlSol)) {
+          b.paired = (b.paired || 0) + 1; b.baselinePairedSol = (b.baselinePairedSol || 0) + o.netPnlSol;
+          b.recoveryPairedSol = (b.recoveryPairedSol || 0) + r.netPnlSol;
+        }
+      } else b.unknown = (b.unknown || 0) + 1;
+    }
+  }
+  audit.noStopRecovery.groups = [...recoveryGroups.values()];
+  if (audit.modelPredictions.rebound.no_model || audit.modelPredictions.drawdown.no_model) audit.warnings.push('Observation models are not loaded for some candidates; install both model files and verify after restart.');
   audit.selectionValidation = require('../src/reporting/selection-validation').selectionValidation(samples, outcomes, summary.window, exitComparisons);
   return { integrity: 'verified', lines, window: summary.window, snapshotAt: summary.snapshotAt, windowRecords: summary.stats.windowRecords,
     configSizeSol: summary.config?.sizeSol, sampleRecords: samples.size, counts, targets, audit, dataQuality: summary.dataQuality,
