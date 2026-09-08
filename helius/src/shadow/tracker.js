@@ -50,13 +50,18 @@ class Tracker {
     this.drawdownModel = new Model(c.drawdownModelFile, this.policyId);
     if (this.drawdownModel.model && this.drawdownModel.model.target !== 'drawdown_60s_25') { this.drawdownModel.model = null; this.drawdownModel.status = 'wrong_target'; }
     this.recovery = c.exitComparisons ? new Recovery(c, r => this.emit(r), liquidation) : null;
+    this.exitRecovery = c.exitComparisons ? new Recovery(c, r => this.emit(r), liquidation, 'exit_recovery') : null;
+    this.stateRecovery = c.exitComparisons && c.stateQuotes ? new Recovery(c, r => this.emit(r), liquidation, 'state_exit_recovery') : null;
     this.experiments = new Experiments(c, this.now());
     this.ages = new Age();
     this.active = new Map(); this.byPool = new Map(); this.lastOrder = new Map(); this.seen = new Map();
     this.sequence = 0; this.connected = false; this.lastGlobalAt = 0; this.samples = 0; this.outcomes = 0; this.censored = 0;
     this.write({ type: 'session', schema: 1, runId, at: this.now(), policy: this.policy, policyId: this.policyId,
       drawdownModelStatus: this.drawdownModel.status, modelStatus: this.model.status, riskModelStatus: this.riskModel.status, returnModelStatus: this.returnModel.status,
-      noStopRecoveryVersion: this.recovery ? 1 : null, exitComparisonVersion: this.exitComparisons ? 1 : null, source: 'processed_pumpswap_swaps', observationalOnly: true });
+      noStopRecoveryVersion: this.recovery ? 1 : null, exitComparisonVersion: this.exitComparisons ? 1 : null,
+      exitResearchVersion: 2, stateQuoteVersion: this.stateRecovery ? 1 : null,
+      exitVariants: this.exitComparisons ? require('./exit-comparisons').ARMS : [],
+      source: 'processed_pumpswap_swaps', observationalOnly: true });
   }
   emit(record) { this.write({ schema: 1, runId: this.runId, policyId: this.policyId, ...record }); }
   connection(connected, at) {
@@ -65,7 +70,9 @@ class Tracker {
   }
   gap(reason, at = this.now()) {
     for (const sample of [...this.active.values()]) this.finishIncomplete(sample, reason, at);
-    if (['process_shutdown', 'clock_moved_backwards'].includes(reason)) this.recovery?.close(reason, at);
+    if (['process_shutdown', 'clock_moved_backwards'].includes(reason)) {
+      this.recovery?.close(reason, at); this.exitRecovery?.close(reason, at); this.stateRecovery?.close(reason, at);
+    }
     this.features.reset(); this.lastOrder.clear(); this.connected = false; this.experiments.reset(at);
     this.emit({ type: 'coverage_gap', reason, at });
   }
@@ -92,10 +99,11 @@ class Tracker {
     this.lastOrder.delete(s.pool); this.lastOrder.set(s.pool, { slot: s.slot, at });
     if (this.lastOrder.size > this.c.maxPools) this.lastOrder.delete(this.lastOrder.keys().next().value);
     // One pool observation per swap, shared by overlapping samples; no additional RPC.
-    if (candidate || this.byPool.has(s.pool) || this.recovery?.byPool.has(s.pool)) this.emit({ type: 'pool_observation', key, at, pool: s.pool, mint: s.mint,
+    if (candidate || this.byPool.has(s.pool) || this.recovery?.byPool.has(s.pool) || this.exitRecovery?.byPool.has(s.pool)) this.emit({ type: 'pool_observation', key, at, pool: s.pool, mint: s.mint,
       signature: s.signature, slot: s.slot, side: s.side, eventTime: s.eventTime, price: s.price,
       postBase: s.postBase, postQuote: s.postQuote, virtual: s.virtual, quoteSol: s.quoteSol, sellSol: s.sellSol });
     this.recovery?.observe(s, at);
+    this.exitRecovery?.observe(s, at);
     // Older candidates see this event as a future observation; the new candidate snapshot excludes it.
     for (const id of [...(this.byPool.get(s.pool) || [])]) {
       const sample = this.active.get(id); if (sample) this.observe(sample, s, at);
@@ -132,7 +140,9 @@ class Tracker {
       executionPolicy: this.policy, selection: sample.selection, runStartedAt: this.runStartedAt, observationVersion: 'selection-v2', ...fields });
   }
   finishIncomplete(sample, reason, at) {
-    if (['pool_observation_gap', 'stale_source_observation', 'unquotable_exit', 'stream_disconnected', 'global_delivery_gap', 'main_queue_overflow'].includes(reason)) this.recovery?.add(sample, reason, at);
+    if (['pool_observation_gap', 'stale_source_observation', 'unquotable_exit', 'stream_disconnected', 'global_delivery_gap', 'main_queue_overflow'].includes(reason)) {
+      this.recovery?.add(sample, reason, at); this.exitRecovery?.add(sample, reason, at); this.stateRecovery?.add(sample, reason, at);
+    }
     this.exitComparisons?.censor(sample, reason, at);
     for (const [name, h] of Object.entries(sample.horizons)) {
       if (!h.done) { h.done = true; this.label(sample, name, { status: 'censored', label: null, reason }, at); }
@@ -146,7 +156,7 @@ class Tracker {
   }
   observe(sample, s, at) {
     if (at < sample.lastAt) return;
-    if (at - sample.lastAt > this.c.maxGapMs) { this.finishIncomplete(sample, 'pool_observation_gap', at); this.recovery?.observe(s, at); return; }
+    if (at - sample.lastAt > this.c.maxGapMs) { this.finishIncomplete(sample, 'pool_observation_gap', at); this.recovery?.observe(s, at); this.exitRecovery?.observe(s, at); return; }
     if (!sample.entry) {
       if (at > sample.at + this.c.entryDeadlineMs) { this.finishIncomplete(sample, 'no_timely_entry_observation', at); return; }
       if (at < sample.at + this.c.entryDelayMs) { sample.lastAt = at; sample.last = s; return; }
@@ -195,6 +205,7 @@ class Tracker {
   }
   tick(at) {
     this.recovery?.tick(at);
+    this.exitRecovery?.tick(at); this.stateRecovery?.tick(at);
     for (const sample of [...this.active.values()]) {
       this.exitComparisons?.tick(sample, at);
       if (!sample.entry && at > sample.at + this.c.entryDeadlineMs) this.finishIncomplete(sample, 'no_timely_entry_observation', at);
@@ -204,12 +215,33 @@ class Tracker {
       }
     }
   }
+  stateTargets() {
+    const pools = new Map();
+    for (const r of this.stateRecovery?.active.values() || []) {
+      const s = r.source, slot = Math.max(r.lastSlot || 0, this.lastOrder.get(r.pool)?.slot || 0, pools.get(r.pool)?.slot || 0);
+      pools.set(r.pool, { pool: r.pool, mint: s.mint, baseVault: s.baseVault, quoteVault: s.quoteVault, tokenProgram: s.tokenProgram, slot });
+    }
+    return [...pools.values()];
+  }
+  stateQuotes(results, at = this.now()) {
+    if (!this.stateRecovery) return;
+    for (const r of results) {
+      const discardReason = r.status !== 'quoted' || !r.quote ? 'unavailable'
+        : at - r.at > 3000 || r.at > at || r.at - r.requestAt > 3000 ? 'stale_delivery'
+        : r.quote.slot < (this.lastOrder.get(r.pool)?.slot || 0) ? 'older_than_stream'
+        : !this.stateRecovery.byPool.has(r.pool) ? 'no_active_recovery' : null;
+      this.emit({ ...r, discardReason });
+      if (discardReason) continue;
+      this.stateRecovery.observe(r.quote, r.at);
+    }
+  }
   decision(key, status, at, extra = {}) {
     if (status === 'paper_sell' || status === 'sell_confirmed') this.experiments.closed(extra.mint, at, extra.netPnlSol ?? extra.grossPnlSol);
     this.emit({ type: 'decision', key, status, at, ...extra });
   }
   stats() { return { samples: this.samples, outcomes: this.outcomes, censored: this.censored, active: this.active.size,
     recovery: this.recovery?.stats() ?? null, migrationAge: { ...this.ages.counters, cachedPools: this.ages.pools.size },
+    exitRecovery: this.exitRecovery?.stats() ?? null, stateRecovery: this.stateRecovery?.stats() ?? null,
     historyPools: this.features.pools.size, historyEvents: this.features.total, historyEvictions: this.features.evictions, model: this.model.status,
     drawdownModel: this.drawdownModel.status, riskModel: this.riskModel.status, returnModel: this.returnModel.status, exitComparisons: !!this.exitComparisons }; }
 }

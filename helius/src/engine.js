@@ -292,7 +292,7 @@ class Engine {
     this.store.save();
     const dayBytes = this.data.streamDays[new Date().toISOString().slice(0, 10)] || 0;
     this.store.log('health', { connected: this.stream.connected, transactions: this.ticks, parsedSwaps: this.swaps,
-      rpcRequests: this.executor.rpcCalls, migrationDiagnostics: this.migrationDiagnostics,
+      rpcRequests: this.executor.rpcCalls + (this.shadowEvent('stats')?.stateQuotes?.requests || 0), migrationDiagnostics: this.migrationDiagnostics,
       positions: Object.keys(this.data.positions).length, pending: Object.keys(this.data.pending).length,
       streamMBToday: +(dayBytes / 1e6).toFixed(3), estimatedStreamCreditsToday: +(dayBytes / 1e6 * 20).toFixed(1) });
     const shadow = this.shadowEvent('stats');

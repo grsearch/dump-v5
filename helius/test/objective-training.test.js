@@ -41,7 +41,7 @@ test('exit arms await observed delayed ticks, retain unknown gaps and never muta
   comparisons.observe(sample, { price: 0.9 }, 0.85, 1250); assert.equal(events.length, 1);
   assert.equal(events[0].variant, 'exit_250ms'); assert.ok(Math.abs(events[0].netPnlSol + 0.15) < 1e-9);
   comparisons.censor(sample, 'pool_observation_gap', 1300);
-  assert.equal(events.length, 4); assert.equal(events.filter(r => r.status === 'censored').length, 3);
+  assert.equal(events.length, 8); assert.equal(events.filter(r => r.status === 'censored').length, 7);
   assert.ok(events.filter(r => r.status === 'censored').every(r => r.netPnlSol === null));
 });
 

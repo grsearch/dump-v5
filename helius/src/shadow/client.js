@@ -8,6 +8,7 @@ class ShadowClient {
     this.queue = []; this.inFlight = false; this.scheduled = false; this.dropped = 0; this.needsGap = false;
     this.accepting = true; this.exited = false; this.drain = null;
     if (!this.enabled) return;
+    this.stateQuotes = new (require('./state-quotes').StateQuotes)(c);
     // Never serialize the wallet secret or the API URL/key into a learning event or workerData.
     const config = { ...c.shadow, sizeSol: c.sizeSol, takeProfit: c.takeProfit, stopLoss: c.stopLoss,
       trailArm: c.trailArm, trailDrop: c.trailDrop, maxHoldMs: c.maxHoldMs,
@@ -21,8 +22,12 @@ class ShadowClient {
       this.worker.on('message', msg => {
         if (msg.type === 'ack') { this.inFlight = false; this.pump(); }
         if (msg.type === 'status') this.status = msg.value;
+        if (msg.type === 'state_quote_request' && this.accepting) {
+          this.stateQuotes.poll(msg.targets).then(results => { if (results.length) this.enqueue({ type: 'state_quotes', results }); })
+            .catch(() => { /* Fail closed; transport never logs URLs or server error text. */ });
+        }
       });
-      this.worker.on('error', () => { this.enabled = false; this.status = { status: 'worker_error' }; this.queue = []; });
+      this.worker.on('error', () => { this.stateQuotes.close(); this.enabled = false; this.status = { status: 'worker_error' }; this.queue = []; });
       this.worker.on('exit', code => { this.exited = true; this.enabled = false; this.queue = []; this.status = { ...this.status, workerExitCode: code }; this.resolveClose?.(); });
       this.worker.unref();
     } catch (_) { this.enabled = false; this.status = { status: 'worker_unavailable' }; }
@@ -48,9 +53,10 @@ class ShadowClient {
   decision(swap, status, extra = {}) {
     this.enqueue({ type: 'decision', key: `${swap.signature}:${swap.pool}`, status, at: Date.now(), extra });
   }
-  stats() { return { ...this.status, queueDepth: this.queue.length, dropped: this.dropped }; }
+  stats() { return { ...this.status, stateQuotes: this.stateQuotes?.stats() ?? null, queueDepth: this.queue.length, dropped: this.dropped }; }
   async close() {
     this.accepting = false;
+    this.stateQuotes?.close();
     if (!this.worker || this.exited) return;
     await new Promise(resolve => {
       const timer = setTimeout(() => { this.worker.terminate().finally(resolve); }, 4000);

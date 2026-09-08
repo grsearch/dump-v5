@@ -42,7 +42,7 @@ test('exit research preserves baseline labels and archives missing variant exits
   }
   assert.deepEqual(enabled.records.filter(r => r.type === 'outcome'), disabled.records.filter(r => r.type === 'outcome'));
   const variants = enabled.records.filter(r => r.type === 'exit_comparison');
-  assert.equal(variants.length, 4); assert.ok(variants.some(r => r.variant === 'exit_1000ms' && r.status === 'censored'));
+  assert.equal(variants.length, 8); assert.ok(variants.some(r => r.variant === 'exit_1000ms' && r.status === 'censored'));
   assert.equal(enabled.tracker.active.size, 0);
 });
 
@@ -96,8 +96,30 @@ test('rebound and strategy profit are separate labels; a stop can precede reboun
   assert.equal(records.find(r => r.target === 'strategy_proxy').label, 0);
   assert.equal(records.find(r => r.target === 'strategy_proxy').reason, 'stop_loss');
   assert.equal(records.find(r => r.target === 'rebound_60s').label, 1);
+  assert.equal(tracker.active.size, 1); // 50% no-stop arm is still observing the flat 40% path.
+  tracker.gap('process_shutdown', 120001);
   assert.equal(tracker.active.size, 0);
 });
+test('account snapshots feed only independent recovery, preserve censored labels and reject late delivery', () => {
+  const { tracker, records } = collector({ stateQuotes: true }); warm(tracker);
+  tracker.onSwap(swap(60000, { baseVault: 'base', quoteVault: 'quote', tokenProgram: 'program' }), true, true);
+  tracker.onSwap(swap(60500, { baseVault: 'base', quoteVault: 'quote', tokenProgram: 'program' }), false, true);
+  tracker.tick(71000);
+  const targets = tracker.stateTargets(); assert.equal(targets.length, 1); assert.equal(targets[0].baseVault, 'base');
+  const labels = JSON.stringify(records.filter(r => r.type === 'outcome')), history = tracker.features.total;
+  const result = (at, requestAt) => ({ type: 'state_quote', pool: 'pool', status: 'quoted', at, requestAt,
+    quote: { ...swap(at, { postQuote: '160000000000' }), requestAt } });
+  tracker.stateQuotes([result(72100, 72000)], 76000);
+  assert.equal(records.at(-1).discardReason, 'stale_delivery');
+  tracker.stateQuotes([result(76100, 76000)], 76100);
+  tracker.stateQuotes([result(78100, 78000)], 78100);
+  assert.ok(records.some(r => r.type === 'state_exit_recovery' && r.status === 'account_state_proxy'));
+  assert.equal(JSON.stringify(records.filter(r => r.type === 'outcome')), labels);
+  assert.equal(tracker.features.total, history);
+  assert.ok(!records.some(r => r.type === 'no_stop_recovery' && r.phase === 'finished'));
+  tracker.gap('process_shutdown', 79000); assert.equal(tracker.stateTargets().length, 0);
+});
+
 test('disconnect, no entry and capacity overflow are censored, never negative training labels', () => {
   for (const kind of ['disconnect', 'no_entry', 'capacity']) {
     const { tracker, records } = collector({ maxActive: kind === 'capacity' ? 0 : 10 }); warm(tracker);

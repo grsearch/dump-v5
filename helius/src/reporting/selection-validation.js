@@ -57,7 +57,7 @@ function selectionValidation(samples, outcomes, window, exitComparisons = new Ma
           b.known++; b.rebound += h.label; b.drawdown25 += Number(h.minNetPct <= -25); b.both += Number(h.label === 1 && h.minNetPct <= -25);
         } else b.unknown++;
         const variants = g.exitsBySelection[name] ||= {};
-        for (const variant of ['exit_250ms', 'exit_1000ms', 'net_take5', 'no_fixed_stop']) {
+        for (const variant of require('../shadow/exit-comparisons').ARMS.map(a => a.name)) {
           const v = variants[variant] ||= { selected: 0, paired: 0, missingOrUnpaired: 0, baselineSol: 0, variantSol: 0, differenceSol: 0, deepLoss50: 0, deepLossKnown: 0 };
           v.selected++;
           const e = (exitsById.get(s.id) || []).find(e => e.variant === variant && e.comparisonVersion === 1);

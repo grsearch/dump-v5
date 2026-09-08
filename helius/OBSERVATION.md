@@ -39,7 +39,7 @@ paper_sell、sell_submitted、确认记录增加诊断：首次触发时间、�
 
 ## 性能与归档
 
-模型、对照与年龄缓存都在原观察线程运行；新增数据复用行情，不增加 Helius 请求。买入路径不等待模型、年龄查询或实验结果。每个策略目标多一条 comparison 日志，增加本地磁盘和归档体积；年龄缓存写盘也共享机器资源。日报及小时归档自动包含这些记录，不需要改变 COS 定时器。99 项本地测试通过，包括迁移事件及指令联合认证、未知年龄、时序隔离、观察缺失、对照版本、钱包阻塞诊断及归档分组。
+模型、基于交易流的对照与年龄缓存都在原观察线程运行，复用行情。账户状态补报价另有请求预算，见 exitResearchVersion=2 章节。买入路径不等待模型、年龄查询或实验结果。每个策略目标多一条 comparison 日志，增加本地磁盘和归档体积；年龄缓存写盘也共享机器资源。日报及小时归档自动包含这些记录，不需要改变 COS 定时器。99 项本地测试通过，包括迁移事件及指令联合认证、未知年龄、时序隔离、观察缺失、对照版本、钱包阻塞诊断及归档分组。
 
 ## 2026-09-08：迁移诊断与执行差额拆分
 
@@ -83,7 +83,7 @@ node scripts/diagnose-migration.js
 该工具只取证，不写 AGE 缓存，不回填旧训练样本。历史交易的当前查询结果也不能伪装成当时已经知道的信息。单元测试验证了格式和严格匹配；两笔真实交易的具体不匹配原因仍需服务器取证文件确认。官方格式来源：https://github.com/pump-fun/pump-public-docs/blob/main/idl/pump.json
 # 2026-09-08：风险、收益训练及退出观察对照
 
-本次不更改买卖参数，不让模型决定订单。新增功能在观察线程运行，复用已有行情，无额外 Helius 请求。程序仍不自主训练或替换模型。
+本次不更改买卖参数，不让模型决定订单。模型评分与基于交易流的对照在观察线程运行，复用已有行情；账户状态补报价另有请求预算。程序仍不自主训练或替换模型。
 
 ## 新训练目标
 
@@ -115,7 +115,7 @@ SHADOW_EXIT_COMPARISONS=true
 
 准备工具会将观察起点设为准备时刻和模型已用标签截止时间的较晚者。模型不热更新，需正常重启服务读取配置；模型无效、目标错误、历史不足或分布外时不给评分。sample / execution_comparison 新增 `objectivePredictions.loss25`、`objectivePredictions.netReturn`；shadow_health 提供两个模型状态。未配置时如实显示 no_model。
 
-## 四组固定退出对照
+## 原四组固定退出对照（新增30%/50%组见文末）
 
 所有对照共享原策略的模拟入场金额、时间与成本：
 
@@ -179,11 +179,11 @@ node helius/scripts/prepare-observation-model.js helius/data/models/drawdown60.j
 
 sample / execution_comparison 记录 objectivePredictions.drawdown60；原prediction提供反弹评分。selection.version=2、observationVersion=selection-v2，记录两模型ID和固定规则。exit_comparison带买前selection，不能用事后涨跌挑样本。shadow_health.drawdownModel与session.drawdownModelStatus可核查是否已加载。
 
-quality.json 的 audit.selectionValidation.groups 每组新增 reboundBySelection（完整60秒的反弹/大跌/两者都发生/未知），exitsBySelection（同候选原策略与四种退出对照的配对收益、差额、50%深亏、未配对数）。按运行、策略、规则及模型ID分组，兼容旧v1。无完整配对时金额为null，不把缺失结果当作0收益或回本。归档出口自动包含新字段，无需调整北京时间7点的定时任务。
+quality.json 的 audit.selectionValidation.groups 每组新增 reboundBySelection（完整60秒的反弹/大跌/两者都发生/未知），exitsBySelection（同候选原策略与退出对照的配对收益、差额、50%深亏、未配对数）。按运行、策略、规则及模型ID分组，兼容旧v1。无完整配对时金额为null，不把缺失结果当作0收益或回本。归档出口自动包含新字段，无需调整北京时间7点的定时任务。
 
 ## 间断后的独立长期观察（recoveryVersion=1）
 
-开启SHADOW_EXIT_COMPARISONS时，已有模拟入场且no_fixed_stop尚未完成的样本，在池行情间隔、旧行情、无法报价、断流或队列覆盖中断时，可进入独立恢复观察。原strategy_proxy、反弹标签与四组exit_comparison仍按原规则删失，不改成成功；恢复记录为no_stop_recovery，coverage=discontinuous，不供原训练目标使用。
+开启SHADOW_EXIT_COMPARISONS时，已有模拟入场且no_fixed_stop尚未完成的样本，在池行情间隔、旧行情、无法报价、断流或队列覆盖中断时，可进入独立恢复观察。原strategy_proxy、反弹标签与exit_comparison仍按原规则删失，不改成成功；恢复记录为no_stop_recovery，coverage=discontinuous，不供原训练目标使用。
 
 记录阶段started、first_quote、finished；后续可报价退出为discontinuous_proxy，到期仍无可报价退出、容量不足或停机为unknown，净收益为空。首次恢复报价可核对距间隔多久；minObservedNetPct/maxObservedNetPct仅是恢复后可见报价极值，不代表缺口内完整轨迹。保留缺口前已触发的退出意图，否则按后续可见报价触发止盈/追踪或按原入场时间触发最长持仓退出；无法知道缺口中是否曾触发条件，因此必须独立统计。
 
@@ -202,3 +202,43 @@ sudo systemctl restart dump-sniper
 ~~~
 
 安装前同时验证两个目标、策略口径、离线验证结果；验证失败不修改.env。成功后写入私有模型副本，观察起点移到安装时刻之后，备份.env并仅更新两项模型路径，去除它们的重复配置，不改金额、密钥、止盈止损。备份包含密钥，应只保留在服务器受限目录。检查非成功状态返回非零退出码。配置检查只能证明文件可加载；重启后还需在session中核对modelStatus及drawdownModelStatus都为experimental_calibrated_model、noStopRecoveryVersion=1。
+
+## 提高止盈与账户状态补报价（exitResearchVersion=2）
+
+本次不修改订单引擎、固定模型、1 SOL配置或原训练标签。固定止盈按价格涨幅触发，最终收益按原曲线冲击、费率、滑点及网络费假设估算，不把30%价格涨幅当作30%净利润。
+
+新增四个连续观察对照：take30、take50、take30_no_stop、take50_no_stop。前两组保留原固定止损，后两组取消固定止损；所有组共享原模拟入场、保留原移动止盈和最长持仓。默认仍为涨幅10%启动移动止盈、从最高价回落3%退出，因此可能在达到30%/50%之前退出。原基准与no_fixed_stop提供默认20%的两组参照，其他250ms/1000ms/net_take5研究继续保留。仅新增本地研究状态，不发订单。
+
+未知结果不代表没有流动性或必然归零。连续研究仍在超过SHADOW_MAX_OBSERVATION_GAP_MS（默认10秒）没有有效池子事件时删失；没有及时入场的样本不补造买入。新增两个独立分支：
+- exit_recovery：对其他尚未完成的退出组以及尚未完成的基准，等待恢复后的真实交易事件；no_fixed_stop原有no_stop_recovery分支继续独立。
+- state_exit_recovery：对所有尚未完成退出组和基准，独立使用Helius账户状态估价。它不会与交易事件恢复分支合并，也不会覆盖原outcome/exit_comparison。两分支可能涵盖同一个样本，金额不能相加。
+
+所有恢复分支都保留coverage=discontinuous。缺口前已触发的退出意图保留；否则只根据缺口后的可见报价判断退出。缺口内是否曾触发止盈/移动止盈仍未知。账户估价结果status=account_state_proxy，恢复成交事件结果status=discontinuous_proxy，均不是实盘成交或连续价格路径。最长持仓后仅再等该组退出延迟加maxGapMs，超过期限、容量不足或停机仍为unknown，不用旧价强平，也不无限延长亏损观察。
+
+配置（默认开启，无需手动新增到旧.env才生效）：
+
+~~~dotenv
+SHADOW_STATE_QUOTES=true
+SHADOW_STATE_QUOTE_REQUESTS_PER_MINUTE=10
+SHADOW_STATE_QUOTE_INTERVAL_MS=15000
+~~~
+
+SHADOW_EXIT_COMPARISONS=false或SHADOW_ENABLED=false时不会发起这类查询。SHADOW_STATE_QUOTES=false仅关闭账户状态研究，保留基于交易流的对照。恢复状态按每个分支的SHADOW_MAX_ACTIVE/SHADOW_MAX_ACTIVE_PER_POOL约束：原no_stop_recovery每样本一项，新增两分支按每个样本的每个退出组计一项；容量不足明确记录unknown。关注capacity，不能忽略被容量筛掉的样本。
+
+后台查询不进入买入等待链路，不对全网池子轮询。只有已模拟入场且仍有账户恢复研究的池子会请求；同池不同样本和退出组共用一次快照。每批最多20池、80个账户，读取池子、base mint、两个金库，在同一confirmed上下文核对身份、代币程序、金库归属、冻结状态和储备；读取当前virtualQuoteReserves，不沿用中断前储备。带minContextSlot拒绝旧状态。不支持的扩展、无效账户、空储备明确返回不可估价，不能当作已确认无法卖出。
+
+请求为独立异步服务，单并发，3秒超时；每池成功后至少间隔15秒，失败指数退避至最多120秒，采用滚动分钟预算和较久未查询池优先。每分钟10次意味着满负荷最多14,400次/24小时；实际请求量取决于活跃恢复池，不能保证为零，也不是credits数量。健康日志rpcRequests包括这些请求；shadow_health.stateQuotes单独显示requests/queriedPools/quotedPools/failedPools/budgetSkips。账户研究只使用现有Helius RPC，不新增Birdeye或DEX Screener依赖。
+
+轮询的实际退出延迟可能是数秒或更久，不能当成500ms成交。快照必须在退出等待期限之后发起才能用作退出估价。超过3秒的响应/工作队列交付、比已知流事件slot更旧的结果不会使用。记录state_quote中的requestAt、at、latencyMs、slot、原始储备、失败原因与discardReason；恢复记录带variant、assumptions、quoteSource、quoteSlot、quoteRequestAt、actualExitDelayMs、gapReason。SDK费率仍使用研究配置假设，快照估价不保证交易可执行。
+
+每日COS模板自动包含新记录，无需改7点定时器。quality.json新增：
+- audit.stateQuotes：取得报价、无法报价、原因及丢弃原因。
+- audit.researchRecovery：按运行/策略/模型/退出组/来源分开统计all、joint、highRebound，含已取得估价、未知原因、待完成和与完整基准的同候选配对；另外用pairedWithSourceBaseline及sourceDifferenceSol记录同来源恢复基准的配对，两个配对口径不能混加。以窗口内最新恢复活动记录为口径，非候选窗口总量。
+- audit.selectionValidation.exitsBySelection：增加四个止盈对照，仍只用连续、同候选、同策略的完整配对；pending和未知不填零。
+
+原audit.noStopRecovery与连续audit.exitComparisons保持各自口径。研究分支不进入模型训练，不自动提高止盈、不取消真实止损。
+
+更新后按现有部署步骤重启，保留.env/data及现有模型，无需重新安装模型。先导出15分钟窗口检查：
+1. session.exitResearchVersion=2，stateQuoteVersion=1，exitVariants含take30/take50及其no_stop版本；双模型仍正常加载。
+2. 发生行情缺口后出现state_quote与state_exit_recovery记录。短窗口没有缺口时零请求是正常的，不应为了验证而主动全网查询。
+3. 核对shadow_health.stateQuotes请求量、失败原因、各恢复capacity/expired和quality.json独立分组；原交易金额和止盈止损配置保持不变。

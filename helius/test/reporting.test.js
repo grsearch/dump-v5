@@ -219,3 +219,29 @@ test('archive includes both frozen observation model snapshots', async t => {
   const a = await buildArchive({ c: f.c, outputDir: path.join(f.dir, 'exports'), end: f.end });
   assert.deepEqual(unpack(a.file).filter(r => r.dataset === 'model_snapshot').map(r => r.record.target).sort(), ['drawdown_60s_25', 'rebound_60s']);
 });
+
+test('archive keeps account-state results, stream recoveries, pending and unknown separate by variant', async t => {
+  const f = fixture(t), at = f.end - 1000;
+  const recovery = { id: 'r', runId: 'run', policyId: 'p', at, variant: 'take30', recoveryVersion: 1,
+    phase: 'finished', coverage: 'discontinuous', netPnlSol: .2 };
+  write(path.join(f.env.SHADOW_DIRECTORY, 'samples-states.jsonl'), [
+    { type: 'outcome', id: 'r', policyId: 'p', target: 'strategy_proxy', status: 'observed_proxy', netPnlSol: -.1, at },
+    { ...recovery, type: 'exit_recovery', status: 'discontinuous_proxy' },
+    { ...recovery, type: 'state_exit_recovery', status: 'account_state_proxy', netPnlSol: -.5 },
+    { ...recovery, type: 'state_exit_recovery', variant: 'baseline', status: 'account_state_proxy', netPnlSol: -.8 },
+    { ...recovery, type: 'state_exit_recovery', variant: 'take50', status: 'unknown', netPnlSol: null, reason: 'no_exit_quote_by_deadline' },
+    { ...recovery, type: 'state_exit_recovery', variant: 'take50_no_stop', phase: 'started', status: 'pending', netPnlSol: null },
+    { type: 'state_quote', at, status: 'unavailable', reason: 'missing_account', discardReason: 'unavailable' },
+  ]);
+  const a = await buildArchive({ c: f.c, outputDir: f.env.COS_EXPORT_DIRECTORY, end: f.end });
+  const q = await require('../scripts/inspect-export').inspect(a.folder), groups = q.audit.researchRecovery.groups;
+  assert.equal(groups.length, 5);
+  assert.equal(groups.find(g => g.type === 'exit_recovery').all.estimatedNetSol, .2);
+  assert.equal(groups.find(g => g.type === 'state_exit_recovery' && g.variant === 'take30').all.estimatedNetSol, -.5);
+  const paired = groups.find(g => g.type === 'state_exit_recovery' && g.variant === 'take30').all;
+  assert.equal(paired.pairedWithSourceBaseline, 1); assert.ok(Math.abs(paired.sourceDifferenceSol - .3) < 1e-12);
+  assert.equal(groups.find(g => g.variant === 'take50').all.unknown, 1);
+  assert.equal(groups.find(g => g.variant === 'take50_no_stop').all.pending, 1);
+  assert.deepEqual(q.audit.exitComparisons, {}); assert.equal(q.audit.noStopRecovery.groups.length, 0);
+  assert.equal(q.audit.stateQuotes.reasons.missing_account, 1);
+});

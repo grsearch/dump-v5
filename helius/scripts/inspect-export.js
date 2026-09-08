@@ -12,6 +12,8 @@ async function inspect(directory) {
   const counts = {}, samples = new Map(), outcomes = new Map(); let lines = 0, bytes = 0, first = null, footer = null;
   const audit = { windowCounts: {}, coverageGapReasons: {}, featureReasons: {}, policies: {}, paper: { closed: 0, wins: 0, losses: 0, flat: 0, missingPnl: 0, grossPnlSol: 0 }, shadowHealth: { observations: 0, maxQueueDepth: 0, maxDroppedPerSession: 0, maxHistoryEvictionsPerSession: 0 } };
   const recoveryResults = new Map();
+  const researchRecovery = new Map();
+  audit.stateQuotes = { quoted: 0, unavailable: 0, reasons: {}, discardReasons: {} };
   audit.modelPredictions = { rebound: {}, drawdown: {} };
   const closes = new Set(), delays = [];
   const comparisons = new Map(), paperResults = new Map(), exitComparisons = new Map();
@@ -61,6 +63,13 @@ async function inspect(directory) {
         }
       }
       if (row.dataset !== 'shadow') continue;
+      if (inside && r.type === 'state_quote') {
+        if (r.discardReason) inc(audit.stateQuotes.discardReasons, r.discardReason);
+        if (r.status === 'quoted') audit.stateQuotes.quoted++;
+        else { audit.stateQuotes.unavailable++; inc(audit.stateQuotes.reasons, r.reason || 'unknown'); }
+      }
+      if (inside && ['exit_recovery', 'state_exit_recovery'].includes(r.type)) researchRecovery.set(`${r.id}:${r.type}:${r.variant}`, r);
+      if (researchRecovery.size > 900000) throw new Error('Research recovery inspection limit exceeded');
       if (r.type === 'no_stop_recovery' && inside && r.phase === 'finished') recoveryResults.set(r.id, r);
       if (recoveryResults.size > 100000) throw new Error('Recovery inspection limit exceeded');
       if (r.type === 'sample') samples.set(r.id, r);
@@ -181,6 +190,7 @@ async function inspect(directory) {
     }
   }
   audit.noStopRecovery.groups = [...recoveryGroups.values()];
+  audit.researchRecovery = require('../src/reporting/recovery-audit').recoveryAudit(researchRecovery, outcomes);
   if (audit.modelPredictions.rebound.no_model || audit.modelPredictions.drawdown.no_model) audit.warnings.push('Observation models are not loaded for some candidates; install both model files and verify after restart.');
   audit.selectionValidation = require('../src/reporting/selection-validation').selectionValidation(samples, outcomes, summary.window, exitComparisons);
   return { integrity: 'verified', lines, window: summary.window, snapshotAt: summary.snapshotAt, windowRecords: summary.stats.windowRecords,

@@ -153,3 +153,5 @@ journalctl -u dump-sniper -f
 双评分观察支持反弹≥60%且60秒大跌风险<25%的独立筛选，以及反弹≥80%的退出对照分组；需另行加载两个冻结模型。原交易策略不变，完整配置见 OBSERVATION.md。
 
 新增长期恢复观察：池行情间隔后保留独立no_stop_recovery研究结果，原严格标签保持删失；提供install-observation-models.js安装及检查双模型。更新后按OBSERVATION.md部署并导出核对。
+
+新增 take30/take50/take30_no_stop/take50_no_stop 退出对照；默认开启 SHADOW_STATE_QUOTES，仅对中断后的研究持仓按需批量查询Helius账户状态，每分钟最多10请求。所有估价独立记录，不覆盖原训练标签或订单规则。请求统计、成本上限、缺失口径及部署核对见 [观察与训练说明](OBSERVATION.md) 的 exitResearchVersion=2 章节。

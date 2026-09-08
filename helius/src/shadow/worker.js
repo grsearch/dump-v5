@@ -39,7 +39,10 @@ function saveAges() {
   lastAgeSave = Date.now();
 }
 function publish(status = 'running') { parentPort.postMessage({ type: 'status', value: { status, ...tracker.stats(), ageCacheStatus, file: name } }); }
-const timer = setInterval(() => { tracker.tick(Date.now()); flush(); if (Date.now() - lastAgeSave >= 60000) saveAges(); publish(); }, 1000);
+const timer = setInterval(() => {
+  tracker.tick(Date.now()); flush(); if (Date.now() - lastAgeSave >= 60000) saveAges(); publish();
+  const targets = tracker.stateTargets(); if (targets.length) parentPort.postMessage({ type: 'state_quote_request', targets });
+}, 1000);
 parentPort.on('message', msg => {
   if (closing) return;
   if (msg.type === 'close') {
@@ -47,6 +50,7 @@ parentPort.on('message', msg => {
   }
   if (msg.type !== 'batch') return;
   for (const event of msg.events) {
+    if (event.type === 'state_quotes') tracker.stateQuotes(event.results);
     if (event.type === 'swap') tracker.onSwap(event.swap, event.candidate, event.fresh);
     if (event.type === 'pool_created' && tracker.ages.created(event.event)) {
       ageDirty = true; tracker.emit({ type: 'pump_migrated', at: event.event.observedAt, ...event.event });
