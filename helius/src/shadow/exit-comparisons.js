@@ -5,8 +5,15 @@ const ARMS = [{ name: 'exit_250ms', delay: 250 }, { name: 'exit_1000ms', delay: 
   { name: 'no_fixed_stop', noFixedStop: true },
   { name: 'take30', takeProfit: 30 }, { name: 'take50', takeProfit: 50 },
   { name: 'take30_no_stop', takeProfit: 30, noFixedStop: true },
-  { name: 'take50_no_stop', takeProfit: 50, noFixedStop: true }];
+  { name: 'take50_no_stop', takeProfit: 50, noFixedStop: true },
+  { name: 'take8_first3s', quickTakePct: 8, quickWindowMs: 3000 }];
 function armConfig(c, a) { return { ...c, takeProfit: a.takeProfit ?? c.takeProfit, stopLoss: a.noFixedStop ? Infinity : c.stopLoss }; }
+function armExitReason(c, a, position, price, netPct, at) {
+  const age = at - position.openedAt;
+  if (a.quickWindowMs && age >= 0 && age <= a.quickWindowMs
+    && price >= position.entryPrice * (1 + a.quickTakePct / 100)) return 'quick_take_profit';
+  return a.netTake && netPct >= a.netTake ? 'net_take_profit' : exitReason(position, price, armConfig(c, a), at);
+}
 class ExitComparisons {
   constructor(c, emit) { this.c = c; this.emit = emit; }
   states(s) {
@@ -17,6 +24,7 @@ class ExitComparisons {
     a.done = true;
     this.emit({ type: 'exit_comparison', comparisonVersion: 1, id: s.id, key: s.key, at,
       variant: a.name, selection: s.selection ?? null, assumptions: { exitDelayMs: a.delay ?? this.c.exitDelayMs, netTakePct: a.netTake ?? null,
+        quickTakePct: a.quickTakePct ?? null, quickWindowMs: a.quickWindowMs ?? null, quickTakeBasis: a.quickWindowMs ? 'price_from_proxy_entry' : null,
         sameEntryAsBaseline: true, baselinePolicy: 'envelope_policyId', maxHoldMs: this.c.maxHoldMs,
         fixedStopEnabled: !a.noFixedStop, stopLossPct: a.noFixedStop ? null : this.c.stopLoss,
         takeProfitPct: a.takeProfit ?? this.c.takeProfit, trailArmPct: this.c.trailArm, trailDropPct: this.c.trailDrop },
@@ -38,8 +46,7 @@ class ExitComparisons {
       } else if (!a.pending) {
         a.position.high = Math.max(a.position.high, swap.price);
         // Only this research arm disables the price stop; profit, trailing and time exits remain identical.
-        const config = armConfig(this.c, a);
-        const reason = a.netTake && pnl >= a.netTake ? 'net_take_profit' : exitReason(a.position, swap.price, config, at);
+        const reason = armExitReason(this.c, a, a.position, swap.price, pnl, at);
         if (reason) a.pending = { reason, at, dueAt: at + (a.delay ?? this.c.exitDelayMs) };
       }
     }
@@ -55,4 +62,4 @@ class ExitComparisons {
   }
   done(s) { return !!s.exitComparisons && s.exitComparisons.every(a => a.done); }
 }
-module.exports = { ExitComparisons, ARMS, armConfig };
+module.exports = { ExitComparisons, ARMS, armConfig, armExitReason };

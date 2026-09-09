@@ -157,3 +157,5 @@ journalctl -u dump-sniper -f
 新增 take30/take50/take30_no_stop/take50_no_stop 退出对照；默认开启 SHADOW_STATE_QUOTES，仅对中断后的研究持仓按需批量查询Helius账户状态，每分钟最多10请求。所有估价独立记录，不覆盖原训练标签或订单规则。请求统计、成本上限、缺失口径及部署核对见 [观察与训练说明](OBSERVATION.md) 的 exitResearchVersion=2 章节。
 
 Token-2022补报价修复：允许经结构校验的元数据扩展与ImmutableOwner，继续拒绝转账税/钩子及未知扩展；失败记录包含具体账户、长度和扩展类型，quality.json新增扩展拒绝汇总。仅影响研究估价，不放宽订单执行限制，详见OBSERVATION.md。
+
+新增 take8_first3s 独立研究组：模拟买入后3秒内价格上涨8%触发止盈，仍等待原退出延迟；超过3秒回到原退出规则。每日COS自动收录，订单参数不变。部署后exitResearchVersion=3、共9个退出对照，详见OBSERVATION.md。

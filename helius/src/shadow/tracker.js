@@ -59,7 +59,7 @@ class Tracker {
     this.write({ type: 'session', schema: 1, runId, at: this.now(), policy: this.policy, policyId: this.policyId,
       drawdownModelStatus: this.drawdownModel.status, modelStatus: this.model.status, riskModelStatus: this.riskModel.status, returnModelStatus: this.returnModel.status,
       noStopRecoveryVersion: this.recovery ? 1 : null, exitComparisonVersion: this.exitComparisons ? 1 : null,
-      exitResearchVersion: 2, stateQuoteVersion: this.stateRecovery ? 1 : null,
+      exitResearchVersion: 3, stateQuoteVersion: this.stateRecovery ? 1 : null,
       exitVariants: this.exitComparisons ? require('./exit-comparisons').ARMS : [],
       source: 'processed_pumpswap_swaps', observationalOnly: true });
   }

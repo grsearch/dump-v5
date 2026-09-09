@@ -252,3 +252,13 @@ SHADOW_EXIT_COMPARISONS=false或SHADOW_ENABLED=false时不会发起这类查询�
 state_quote新增validationVersion=2和accountDiagnostics：包含baseMint/baseVault/quoteVault的地址、程序所有者、字节长度、扩展类型编号/名称/长度、拒绝类型及原因。成功和扩展拒绝都会记录诊断；RPC超时/缺账户时可能没有扩展诊断。quality.json的audit.stateQuotes.extensionRejections按账户角色和扩展类型汇总，结构错误按角色和原因汇总。数据自动进入现有COS模板，无需修改定时器。
 
 部署后先看shadow_health.stateQuotes.validationVersion=2；再检查至少一条status=quoted、账户检查通过的state_quote及其后续state_exit_recovery。现有5次失败并不能证明服务器实际遇到的扩展都是允许类型，本地测试通过也不等于服务器真实报价已验证。请求预算不变，失败首次默认等待30秒，连续失败等待60秒、120秒后封顶（15秒是成功查询间隔，非首次失败间隔）。
+
+### 买入后3秒内+8%快速止盈对照（exitResearchVersion=3）
+
+新增 take8_first3s，当前共9个退出对照。以模拟实际入场proxy_entry时间开始计时，0至3000ms（包含边界）内，观察价格相对原模拟入场价上涨至少8%，触发quick_take_profit。8%沿用固定止盈的价格口径，不是保证净赚8%。触发后仍等待原退出延迟（默认500ms）及有效报价，按真实观察到的估价扣除研究成本；实际结果可能低于8%甚至亏损。
+
+超过3秒未触发，不强平、不延长快速止盈窗口，继续原20%固定止盈、25%固定止损、10%启动/回落3%移动止盈和最长持仓规则。正常止损在前3秒也有效。这是单独的研究组，不叠加取消止损，不修改订单引擎或模型。
+
+行情缺口不补造触发。缺口前已触发的快速退出意图会在独立恢复分支保留，之后的有效报价可以晚于3秒；缺口后的首次可见报价若已超过3秒，不能回填成快速止盈。连续标签和间断估价仍分开，费用、延迟、预算及数据源规则不变。
+
+COS与quality.json的退出分组自动包含take8_first3s。assumptions记录quickTakePct=8、quickWindowMs=3000、quickTakeBasis=price_from_proxy_entry。部署重启后核对session.exitResearchVersion=3、exitVariants含take8_first3s；按买前评分组比较同候选配对净收益，同时检查触发数、延迟和缺失比例。

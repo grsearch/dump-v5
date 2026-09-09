@@ -1,6 +1,5 @@
 'use strict';
-const { exitReason } = require('../strategy');
-const { armConfig } = require('./exit-comparisons');
+const { armExitReason } = require('./exit-comparisons');
 // Each source has independent positions; never produces training labels or continuous exits.
 class Recovery {
   constructor(c, emit, quote, type = 'no_stop_recovery') {
@@ -10,6 +9,8 @@ class Recovery {
   write(r, fields, at) { this.emit({ type: this.type, recoveryVersion: 1, id: r.id, key: r.key, variant: r.arm.name, at,
     quoteSource: this.type === 'state_exit_recovery' ? 'helius_account_state' : 'processed_swap',
     assumptions: { takeProfitPct: r.arm.takeProfit ?? this.c.takeProfit, fixedStopEnabled: !r.arm.noFixedStop,
+      quickTakePct: r.arm.quickTakePct ?? null, quickWindowMs: r.arm.quickWindowMs ?? null,
+      quickTakeBasis: r.arm.quickWindowMs ? 'price_from_proxy_entry' : null,
       stopLossPct: r.arm.noFixedStop ? null : this.c.stopLoss, trailArmPct: this.c.trailArm, trailDropPct: this.c.trailDrop,
       maxHoldMs: this.c.maxHoldMs, exitDelayMs: r.arm.delay ?? this.c.exitDelayMs, netTakePct: r.arm.netTake ?? null },
     quoteSlot: r.quoteSlot ?? null, quoteRequestAt: r.quoteRequestAt ?? null,
@@ -65,7 +66,7 @@ class Recovery {
           actualExitDelayMs: at - r.pending.at, netPnlPct: pnl }, at);
       } else if (!r.pending) {
         r.position.high = Math.max(r.position.high, swap.price);
-        const reason = r.arm.netTake && pnl >= r.arm.netTake ? 'net_take_profit' : exitReason(r.position, swap.price, armConfig(this.c, r.arm), at);
+        const reason = armExitReason(this.c, r.arm, r.position, swap.price, pnl, at);
         if (reason) r.pending = { reason, at, dueAt: at + delay };
       }
     }
