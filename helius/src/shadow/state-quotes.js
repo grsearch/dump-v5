@@ -1,9 +1,10 @@
 'use strict';
 const { PublicKey } = require('@solana/web3.js');
-const { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, MintLayout, unpackAccount } = require('@solana/spl-token');
+const { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, unpackMint, unpackAccount } = require('@solana/spl-token');
+const { inspectExtensions } = require('./account-extensions');
 const { PUMP_AMM_SDK } = require('@pump-fun/pump-swap-sdk');
 const { PUMP, WSOL } = require('../config');
-const fail = reason => { const e = new Error(reason); e.reason = reason; throw e; };
+const fail = (reason, diagnostics) => { const e = new Error(reason); e.reason = reason; e.diagnostics = diagnostics; throw e; };
 function decodeState(s, values, slot) {
   const infos = values.map(a => a && ({ ...a, owner: new PublicKey(a.owner), data: Buffer.from(a.data[0], 'base64') }));
   const [p, m, b, q] = infos;
@@ -13,9 +14,13 @@ function decodeState(s, values, slot) {
   if (!pool.baseMint.equals(new PublicKey(s.mint)) || pool.quoteMint.toBase58() !== WSOL
     || pool.poolBaseTokenAccount.toBase58() !== s.baseVault || pool.poolQuoteTokenAccount.toBase58() !== s.quoteVault) fail('pool_identity_mismatch');
   if (![TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID].some(p => p.equals(program)) || !m.owner.equals(program)) fail('invalid_token_program');
-  if (m.data.length !== MintLayout.span || b.data.length !== 165 || q.data.length !== 165) fail('unsupported_extensions');
-  const mint = MintLayout.decode(m.data);
-  if (!mint.isInitialized || mint.freezeAuthorityOption !== 0) fail('mint_not_supported');
+  const accountDiagnostics = [inspectExtensions(m, 'baseMint', 'mint', new PublicKey(s.mint), program),
+    inspectExtensions(b, 'baseVault', 'account', new PublicKey(s.baseVault), program),
+    inspectExtensions(q, 'quoteVault', 'account', new PublicKey(s.quoteVault), TOKEN_PROGRAM_ID)];
+  const rejected = accountDiagnostics.find(d => d.status === 'rejected');
+  if (rejected) fail(rejected.reason, accountDiagnostics);
+  const mint = unpackMint(new PublicKey(s.mint), m, program);
+  if (!mint.isInitialized || mint.freezeAuthority) fail('mint_not_supported', accountDiagnostics);
   const base = unpackAccount(new PublicKey(s.baseVault), b, program), quote = unpackAccount(new PublicKey(s.quoteVault), q, TOKEN_PROGRAM_ID);
   if (base.mint.toBase58() !== s.mint || quote.mint.toBase58() !== WSOL || base.owner.toBase58() !== s.pool
     || quote.owner.toBase58() !== s.pool || !base.isInitialized || !quote.isInitialized || base.isFrozen || quote.isFrozen) fail('invalid_vault');
@@ -23,7 +28,7 @@ function decodeState(s, values, slot) {
   if (base.amount === 0n || quote.amount === 0n || virtual < 0n) fail('empty_or_invalid_reserves');
   const price = Number(quote.amount + virtual) / Number(base.amount) / 1e9;
   if (!(price > 0) || !Number.isFinite(price)) fail('invalid_price');
-  return { pool: s.pool, mint: s.mint, slot, price, postBase: base.amount.toString(), postQuote: quote.amount.toString(), virtual: virtual.toString() };
+  return { pool: s.pool, mint: s.mint, slot, price, postBase: base.amount.toString(), postQuote: quote.amount.toString(), virtual: virtual.toString(), accountDiagnostics };
 }
 // Read-only service. Credentials stay in the main process, never in workerData or records.
 class StateQuotes {
@@ -32,7 +37,7 @@ class StateQuotes {
     this.history = []; this.pools = new Map(); this.busy = false; this.closed = false;
     this.counts = { requests: 0, queriedPools: 0, quotedPools: 0, failedPools: 0, budgetSkips: 0 };
   }
-  stats() { return { ...this.counts, enabled: !!this.c.shadow.stateQuotes, inFlight: this.busy }; }
+  stats() { return { ...this.counts, validationVersion: 2, enabled: !!this.c.shadow.stateQuotes, inFlight: this.busy }; }
   close() { this.closed = true; this.controller?.abort(); }
   async poll(targets) {
     if (this.closed || this.busy || !this.c.shadow.stateQuotes) return [];
@@ -67,13 +72,13 @@ class StateQuotes {
       if (this.now() - at > 3000 || this.now() < at) fail('stale_response');
       for (const s of valid) {
         try { results.push(this.result(s, at, this.decode(s, [s.pool, s.mint, s.baseVault, s.quoteVault].map(k => body.result.value[keys.indexOf(k)]), slot))); }
-        catch (e) { results.push(this.result(s, at, null, e.reason || 'account_decode_failed')); }
+        catch (e) { results.push(this.result(s, at, null, e.reason || 'account_decode_failed', e.diagnostics)); }
       }
     } catch (e) { for (const s of valid) results.push(this.result(s, at, null, e.reason || 'rpc_unavailable')); }
     finally { clearTimeout(timeout); this.busy = false; this.controller = null; }
     return this.closed ? [] : results;
   }
-  result(s, requestAt, quote, reason = null) {
+  result(s, requestAt, quote, reason = null, diagnostics = null) {
     const at = this.now(), old = this.pools.get(s.pool), failures = quote ? 0 : (old?.failures || 0) + 1;
     const interval = this.c.shadow.stateQuoteIntervalMs;
     const delay = Math.min(Math.max(120000, interval), interval * 2 ** Math.min(failures, 4));
@@ -81,7 +86,8 @@ class StateQuotes {
     this.pools.set(s.pool, { lastAt: at, nextAt: at + delay, failures });
     if (this.pools.size > 5000) this.pools.delete(this.pools.keys().next().value);
     this.counts[quote ? 'quotedPools' : 'failedPools']++;
-    return { type: 'state_quote', source: 'helius_account_state', pool: s.pool, mint: s.mint, requestAt, at,
+    return { type: 'state_quote', validationVersion: 2, accountDiagnostics: diagnostics || quote?.accountDiagnostics || null,
+      source: 'helius_account_state', pool: s.pool, mint: s.mint, requestAt, at,
       latencyMs: at - requestAt, status: quote ? 'quoted' : 'unavailable', reason, quote: quote && { ...quote, requestAt } };
   }
 }

@@ -242,3 +242,13 @@ SHADOW_EXIT_COMPARISONS=false或SHADOW_ENABLED=false时不会发起这类查询�
 1. session.exitResearchVersion=2，stateQuoteVersion=1，exitVariants含take30/take50及其no_stop版本；双模型仍正常加载。
 2. 发生行情缺口后出现state_quote与state_exit_recovery记录。短窗口没有缺口时零请求是正常的，不应为了验证而主动全网查询。
 3. 核对shadow_health.stateQuotes请求量、失败原因、各恢复capacity/expired和quality.json独立分组；原交易金额和止盈止损配置保持不变。
+
+### Token-2022补报价兼容修复（validationVersion=2）
+
+账户状态补报价不再以mint必须82字节、金库必须165字节一刀切拒绝。对Token-2022逐项解析TLV，当前只放行mint的MetadataPointer、TokenMetadata及金库的ImmutableOwner；它们分别用于元数据信息、固定账户所有者，不改变本研究按原始数量计算的曲线金额。依据：[Solana元数据扩展](https://solana.com/docs/tokens/extensions/metadata)、[ImmutableOwner](https://solana.com/docs/tokens/extensions/immutable-owner)。不请求元数据URI，不保存名称、描述或元数据原文。
+
+转账税、转账钩子、永久代理、不可转账、暂停及其他未列入允许清单的扩展继续拒绝，哪怕同时带有元数据扩展。还会拒绝长度越界、重复TLV、错误账户类型、无效元数据结构及旧Token程序上伪装的扩展。原池子身份、程序所有权、金库归属、冻结、储备、新鲜度和预算检查继续保留。本修复只支持研究估价，订单执行器的扩展限制保持原样，不能据此认为实盘已支持这些币。
+
+state_quote新增validationVersion=2和accountDiagnostics：包含baseMint/baseVault/quoteVault的地址、程序所有者、字节长度、扩展类型编号/名称/长度、拒绝类型及原因。成功和扩展拒绝都会记录诊断；RPC超时/缺账户时可能没有扩展诊断。quality.json的audit.stateQuotes.extensionRejections按账户角色和扩展类型汇总，结构错误按角色和原因汇总。数据自动进入现有COS模板，无需修改定时器。
+
+部署后先看shadow_health.stateQuotes.validationVersion=2；再检查至少一条status=quoted、账户检查通过的state_quote及其后续state_exit_recovery。现有5次失败并不能证明服务器实际遇到的扩展都是允许类型，本地测试通过也不等于服务器真实报价已验证。请求预算不变，失败首次默认等待30秒，连续失败等待60秒、120秒后封顶（15秒是成功查询间隔，非首次失败间隔）。

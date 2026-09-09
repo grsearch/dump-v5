@@ -13,7 +13,7 @@ async function inspect(directory) {
   const audit = { windowCounts: {}, coverageGapReasons: {}, featureReasons: {}, policies: {}, paper: { closed: 0, wins: 0, losses: 0, flat: 0, missingPnl: 0, grossPnlSol: 0 }, shadowHealth: { observations: 0, maxQueueDepth: 0, maxDroppedPerSession: 0, maxHistoryEvictionsPerSession: 0 } };
   const recoveryResults = new Map();
   const researchRecovery = new Map();
-  audit.stateQuotes = { quoted: 0, unavailable: 0, reasons: {}, discardReasons: {} };
+  audit.stateQuotes = { quoted: 0, unavailable: 0, reasons: {}, discardReasons: {}, extensionRejections: {} };
   audit.modelPredictions = { rebound: {}, drawdown: {} };
   const closes = new Set(), delays = [];
   const comparisons = new Map(), paperResults = new Map(), exitComparisons = new Map();
@@ -64,6 +64,10 @@ async function inspect(directory) {
       }
       if (row.dataset !== 'shadow') continue;
       if (inside && r.type === 'state_quote') {
+        for (const d of r.accountDiagnostics || []) if (d.status === 'rejected') {
+          if (d.blockedExtensions?.length) for (const e of d.blockedExtensions) inc(audit.stateQuotes.extensionRejections, `${d.role}:${e.type}:${e.name}`);
+          else inc(audit.stateQuotes.extensionRejections, `${d.role}:${d.reason}`);
+        }
         if (r.discardReason) inc(audit.stateQuotes.discardReasons, r.discardReason);
         if (r.status === 'quoted') audit.stateQuotes.quoted++;
         else { audit.stateQuotes.unavailable++; inc(audit.stateQuotes.reasons, r.reason || 'unknown'); }

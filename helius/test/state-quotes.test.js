@@ -1,7 +1,8 @@
 'use strict';
 const test = require('node:test'), assert = require('node:assert/strict');
 const { PublicKey } = require('@solana/web3.js');
-const { TOKEN_PROGRAM_ID, MintLayout } = require('@solana/spl-token');
+const { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, MintLayout, ExtensionType: E, getTypeLen } = require('@solana/spl-token');
+const { inspectExtensions } = require('../src/shadow/account-extensions');
 const { PUMP_AMM_SDK } = require('@pump-fun/pump-swap-sdk');
 const BN = require('bn.js');
 const { key } = require('./fixtures');
@@ -74,10 +75,74 @@ test('account estimates validate real SDK pool identity, vaults and virtual rese
   assert.equal(s.virtual, '10000000000'); assert.equal(s.postBase, '100000000000'); assert.ok(Math.abs(s.price - 1.1e-9) < 1e-24);
   assert.throws(() => decodeState({ ...t, mint: key(6) }, wire([p, m, b, q]), 101), /identity/);
   assert.throws(() => decodeState(t, wire([{ ...p, owner: TOKEN_PROGRAM_ID }, m, b, q]), 101), /invalid_pool/);
-  assert.throws(() => decodeState(t, wire([p, { ...m, data: Buffer.alloc(90) }, b, q]), 101), /extensions/);
+  assert.throws(() => decodeState(t, wire([p, { ...m, data: Buffer.alloc(90) }, b, q]), 101), /legacy_account_size_mismatch/);
   const empty = accountInfo(new PublicKey(WSOL), new PublicKey(t.pool), 0n);
   assert.throws(() => decodeState(t, wire([p, m, b, empty]), 101), /reserves/);
   assert.throws(() => decodeState(t, [null, ...wire([m, b, q])], 101), /missing_account/);
+});
+function extended(info, kind, entries) {
+  const prefix = Buffer.alloc(166); info.data.copy(prefix); prefix[165] = kind === 'mint' ? 1 : 2;
+  const tlvs = entries.map(([type, value]) => { const h = Buffer.alloc(4); h.writeUInt16LE(type); h.writeUInt16LE(value.length, 2); return Buffer.concat([h, value]); });
+  return { ...info, owner: TOKEN_2022_PROGRAM_ID, data: Buffer.concat([prefix, ...tlvs]) };
+}
+test('metadata mint and immutable vault extensions produce the same reserve estimate as legacy accounts', async () => {
+  const { t, p, m, b, q, wire } = await accounts(), metadata = Buffer.alloc(80);
+  new PublicKey(t.mint).toBuffer().copy(metadata, 32);
+  const em = extended(m, 'mint', [[E.MetadataPointer, Buffer.alloc(64)], [E.TokenMetadata, metadata]]);
+  const eb = extended(b, 'account', [[E.ImmutableOwner, Buffer.alloc(0)]]);
+  const state = decodeState({ ...t, tokenProgram: TOKEN_2022_PROGRAM_ID.toBase58() }, wire([p, em, eb, q]), 101);
+  const legacy = decodeState(t, wire([p, m, b, q]), 101);
+  assert.equal(state.price, legacy.price); assert.equal(state.postBase, legacy.postBase);
+  assert.deepEqual(state.accountDiagnostics[0].extensions.map(e => e.name), ['MetadataPointer', 'TokenMetadata']);
+  assert.deepEqual(state.accountDiagnostics[1].extensions.map(e => e.name), ['ImmutableOwner']);
+  assert.ok(state.accountDiagnostics.every(d => d.status === 'supported'));
+  const h = service({ decode: decodeState, request: async () => ({ ok: true,
+    json: async () => ({ result: { context: { slot: 101 }, value: wire([p, em, eb, q]) } }) }) });
+  const result = (await h.s.poll([{ ...t, tokenProgram: TOKEN_2022_PROGRAM_ID.toBase58() }]))[0];
+  assert.equal(result.status, 'quoted'); assert.equal(result.quote.price, legacy.price);
+  assert.equal(result.accountDiagnostics[1].extensions[0].name, 'ImmutableOwner');
+});
+test('fee, hook, permissions, unknown and mixed extensions are rejected with account-specific diagnostics', async () => {
+  const { t, p, m, b, q, wire } = await accounts();
+  for (const type of [E.TransferFeeConfig, E.TransferHook, E.PermanentDelegate, E.NonTransferable, E.PausableConfig, 60000]) {
+    const em = extended(m, 'mint', [[E.MetadataPointer, Buffer.alloc(64)], [type, Buffer.alloc(type === 60000 ? 1 : getTypeLen(type))]]);
+    assert.throws(() => decodeState({ ...t, tokenProgram: TOKEN_2022_PROGRAM_ID.toBase58() }, wire([p, em, { ...b, owner: TOKEN_2022_PROGRAM_ID }, q]), 101), e => {
+      assert.equal(e.reason, 'unsupported_extensions');
+      const d = e.diagnostics.find(d => d.status === 'rejected');
+      assert.equal(d.role, 'baseMint'); assert.equal(d.dataLength, em.data.length); assert.equal(d.blockedExtensions[0].type, type); return true;
+    });
+  }
+  for (const type of [E.TransferFeeAmount, E.TransferHookAccount, E.CpiGuard, E.MemoTransfer]) {
+    const eb = extended(b, 'account', [[E.ImmutableOwner, Buffer.alloc(0)], [type, Buffer.alloc(getTypeLen(type))]]);
+    const d = inspectExtensions(eb, 'baseVault', 'account', new PublicKey(t.baseVault), TOKEN_2022_PROGRAM_ID);
+    assert.equal(d.reason, 'unsupported_extensions'); assert.equal(d.blockedExtensions[0].type, type);
+  }
+});
+test('malformed TLV, wrong account kinds, duplicate types, bad metadata and legacy extensions fail closed', async () => {
+  const { t, m, b } = await accounts(), metadata = Buffer.alloc(80); new PublicKey(t.mint).toBuffer().copy(metadata, 32);
+  const valid = extended(m, 'mint', [[E.TokenMetadata, metadata]]);
+  const cases = [];
+  const truncated = { ...valid, data: valid.data.subarray(0, -1) }; cases.push(truncated);
+  const kind = { ...valid, data: Buffer.from(valid.data) }; kind.data[165] = 2; cases.push(kind);
+  const padded = { ...valid, data: Buffer.from(valid.data) }; padded.data[90] = 1; cases.push(padded);
+  cases.push(extended(m, 'mint', [[E.MetadataPointer, Buffer.alloc(63)]]));
+  cases.push(extended(m, 'mint', [[E.MetadataPointer, Buffer.alloc(64)], [E.MetadataPointer, Buffer.alloc(64)]]));
+  const bad = Buffer.from(metadata); bad.writeUInt32LE(0xffffffff, 64); cases.push(extended(m, 'mint', [[E.TokenMetadata, bad]]));
+  cases.push(extended(m, 'mint', [[E.TokenMetadata, Buffer.alloc(80)]]));
+  for (const info of cases) assert.equal(inspectExtensions(info, 'baseMint', 'mint', new PublicKey(t.mint), TOKEN_2022_PROGRAM_ID).reason, 'invalid_extension_layout');
+  const immutable = extended(b, 'account', [[E.ImmutableOwner, Buffer.alloc(1)]]);
+  assert.equal(inspectExtensions(immutable, 'baseVault', 'account', new PublicKey(t.baseVault), TOKEN_2022_PROGRAM_ID).reason, 'invalid_extension_layout');
+  assert.equal(inspectExtensions({ ...valid, owner: TOKEN_PROGRAM_ID }, 'baseMint', 'mint', new PublicKey(t.mint), TOKEN_PROGRAM_ID).reason, 'legacy_account_size_mismatch');
+});
+test('pool polling carries extension diagnostics through unavailable records without raw metadata', async () => {
+  const { t, p, m, b, q, wire } = await accounts();
+  const em = extended(m, 'mint', [[E.TransferHook, Buffer.alloc(getTypeLen(E.TransferHook))]]);
+  const values = wire([p, em, { ...b, owner: TOKEN_2022_PROGRAM_ID }, q]);
+  const h = service({ decode: decodeState, request: async () => ({ ok: true, json: async () => ({ result: { context: { slot: 101 }, value: values } }) }) });
+  const result = (await h.s.poll([{ ...t, tokenProgram: TOKEN_2022_PROGRAM_ID.toBase58() }]))[0];
+  assert.equal(result.validationVersion, 2); assert.equal(result.status, 'unavailable');
+  assert.equal(result.accountDiagnostics[0].blockedExtensions[0].name, 'TransferHook');
+  assert.equal(result.quote, null); assert.ok(!JSON.stringify(result).includes('test-secret'));
 });
 const config = { maxActive: 100, maxActivePerPool: 100, maxHoldMs: 30000, maxGapMs: 10000,
   exitDelayMs: 500, takeProfit: 20, stopLoss: 25, trailArm: 0, trailDrop: 3 };

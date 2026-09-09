@@ -232,6 +232,8 @@ test('archive keeps account-state results, stream recoveries, pending and unknow
     { ...recovery, type: 'state_exit_recovery', variant: 'take50', status: 'unknown', netPnlSol: null, reason: 'no_exit_quote_by_deadline' },
     { ...recovery, type: 'state_exit_recovery', variant: 'take50_no_stop', phase: 'started', status: 'pending', netPnlSol: null },
     { type: 'state_quote', at, status: 'unavailable', reason: 'missing_account', discardReason: 'unavailable' },
+    { type: 'state_quote', at, status: 'unavailable', reason: 'unsupported_extensions', accountDiagnostics: [
+      { role: 'baseMint', status: 'rejected', blockedExtensions: [{ type: 14, name: 'TransferHook', length: 64 }] }] },
   ]);
   const a = await buildArchive({ c: f.c, outputDir: f.env.COS_EXPORT_DIRECTORY, end: f.end });
   const q = await require('../scripts/inspect-export').inspect(a.folder), groups = q.audit.researchRecovery.groups;
@@ -244,4 +246,5 @@ test('archive keeps account-state results, stream recoveries, pending and unknow
   assert.equal(groups.find(g => g.variant === 'take50_no_stop').all.pending, 1);
   assert.deepEqual(q.audit.exitComparisons, {}); assert.equal(q.audit.noStopRecovery.groups.length, 0);
   assert.equal(q.audit.stateQuotes.reasons.missing_account, 1);
+  assert.equal(q.audit.stateQuotes.extensionRejections['baseMint:14:TransferHook'], 1);
 });
