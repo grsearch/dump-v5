@@ -227,7 +227,7 @@ SHADOW_EXIT_COMPARISONS=false或SHADOW_ENABLED=false时不会发起这类查询�
 
 后台查询不进入买入等待链路，不对全网池子轮询。只有已模拟入场且仍有账户恢复研究的池子会请求；同池不同样本和退出组共用一次快照。每批最多20池、80个账户，读取池子、base mint、两个金库，在同一confirmed上下文核对身份、代币程序、金库归属、冻结状态和储备；读取当前virtualQuoteReserves，不沿用中断前储备。带minContextSlot拒绝旧状态。不支持的扩展、无效账户、空储备明确返回不可估价，不能当作已确认无法卖出。
 
-请求为独立异步服务，单并发，3秒超时；每池成功后至少间隔15秒，失败指数退避至最多120秒，采用滚动分钟预算和较久未查询池优先。每分钟10次意味着满负荷最多14,400次/24小时；实际请求量取决于活跃恢复池，不能保证为零，也不是credits数量。健康日志rpcRequests包括这些请求；shadow_health.stateQuotes单独显示requests/queriedPools/quotedPools/failedPools/budgetSkips。账户研究只使用现有Helius RPC，不新增Birdeye或DEX Screener依赖。
+请求为独立异步服务，单并发，3秒超时；普通查询每池成功后间隔15秒，失败指数退避至最多120秒。schedulingVersion=2优先处理到期退出，允许新到期退出越过一次旧轮询等待，但仍遵守滚动分钟总预算，详见末尾说明。每分钟10次意味着满负荷最多14,400次/24小时；实际请求量取决于活跃恢复池，不能保证为零，也不是credits数量。健康日志rpcRequests包括这些请求；shadow_health.stateQuotes单独显示requests/queriedPools/quotedPools/failedPools/budgetSkips。账户研究只使用现有Helius RPC，不新增Birdeye或DEX Screener依赖。
 
 轮询的实际退出延迟可能是数秒或更久，不能当成500ms成交。快照必须在退出等待期限之后发起才能用作退出估价。超过3秒的响应/工作队列交付、比已知流事件slot更旧的结果不会使用。记录state_quote中的requestAt、at、latencyMs、slot、原始储备、失败原因与discardReason；恢复记录带variant、assumptions、quoteSource、quoteSlot、quoteRequestAt、actualExitDelayMs、gapReason。SDK费率仍使用研究配置假设，快照估价不保证交易可执行。
 
@@ -262,3 +262,33 @@ state_quote新增validationVersion=2和accountDiagnostics：包含baseMint/baseV
 行情缺口不补造触发。缺口前已触发的快速退出意图会在独立恢复分支保留，之后的有效报价可以晚于3秒；缺口后的首次可见报价若已超过3秒，不能回填成快速止盈。连续标签和间断估价仍分开，费用、延迟、预算及数据源规则不变。
 
 COS与quality.json的退出分组自动包含take8_first3s。assumptions记录quickTakePct=8、quickWindowMs=3000、quickTakeBasis=price_from_proxy_entry。部署重启后核对session.exitResearchVersion=3、exitVariants含take8_first3s；按买前评分组比较同候选配对净收益，同时检查触发数、延迟和缺失比例。
+
+### 到期补报价与买入前过滤研究（2026-09-09）
+
+session新增stateQuoteSchedulingVersion=2、selectionVersion=3；exitResearchVersion仍为3，退出组仍为9个。保留当前1 SOL配置、20%固定止盈、25%固定止损及模型，未把过滤条件接入订单引擎。
+
+**补报价调度**：每个活跃恢复池携带各研究持仓的退出dueAt和expiresAt。已经到期的退出优先，其次按较久未查询顺序；同池共用快照。未来15秒内存在退出时，普通查询为它预留滚动分钟预算的最后一次请求。到期后如果此前请求早于该退出dueAt，允许一次新请求跳过旧的成功间隔或失败退避，至少与上次响应间隔1秒。到期请求失败后不会每秒重试；新到期意图可再获得一次尝试，始终受原总预算限制。预算已耗尽时仍可能无法报价，不能保证未知结果归零。
+
+不延长持仓截止，不用提前请求的旧快照作为延迟退出成交，不合并不同报价来源，不修改原连续训练标签。独立后台请求不加入买入等待链路，原最多20池/80账户、单并发、3秒时效检查继续生效。
+
+新增诊断：state_quote.scheduling含urgent/deadlineOverride/expiresAt，rpcDiagnostic只保存固定错误类别、数值RPC code或HTTP状态；不记录错误原文、请求地址或密钥。最小上下文slot未满足（-32016）单独标记minimum_context_slot。shadow_health.stateQuotes新增schedulingVersion、reservedBudgetSkips、backoffSkips、urgentPools、deadlineOverrides、rpcErrors。跳过计数按轮询轮次或池次，不是交易数；health的rpcErrors是请求批次，quality.json的rpcDiagnosticCategories/rpcCodes是池级结果数，不能混用分母。
+
+**固定买前过滤组**（selection.version=3，规则ID独立于旧版）：
+
+| 研究组 | 保留条件 |
+|---|---|
+| avoidWeakBuy | 砸单前15秒买入SOL金额占买卖总金额至少20% |
+| avoidPriorFall | 砸单前60秒价格变化至少-20% |
+| avoidLargeDump | 本次砸单严格小于40 SOL |
+| prebuyCombined | 同时满足以上三项 |
+
+使用砸单前特征，不把本次砸单加入历史买卖占比。所有组要求候选新鲜；历史不足、前15秒无买卖额、前60秒不足两次交易等相应条件记unknown，不用默认值判通过。砸单大小本身可在历史不足时单独判断。缺失记录不当失败或零收益；各过滤组重叠，不能相加收益。旧selection版本继续可分析，并按运行、规则ID、模型分组隔离。
+
+四组自动进入quality.json的audit.selectionValidation（含退出配对、反弹/大跌标签和缺失率）以及audit.researchRecovery的独立来源分组。无需更改COS定时器或重新安装模型。
+
+部署后保留.env/data及模型，按原安装步骤重启。15分钟后导出核对：
+
+1. session.selectionVersion=3、stateQuoteSchedulingVersion=2；样本selection.arms含上述四组。
+2. shadow_health.stateQuotes.schedulingVersion=2；请求滚动一分钟不超过配置上限。已有到期恢复时查看urgent、deadlineOverride和实际quoteRequestAt；无到期样本时计数为0是正常情况。
+3. quality.json新增过滤分组与补报价诊断；如有RPC失败，检查category/code而不是把全部失败认定为超时。
+4. 对比未知率时按新进程窗口、同来源和同规则统计，并同时检查成功补回的亏损。部署验证不能仅凭出现一次成功报价就认定采集完整。

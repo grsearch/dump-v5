@@ -35,9 +35,10 @@ class StateQuotes {
   constructor(c, { now = Date.now, request = fetch, decode = decodeState } = {}) {
     this.c = c; this.now = now; this.request = request; this.decode = decode;
     this.history = []; this.pools = new Map(); this.busy = false; this.closed = false;
-    this.counts = { requests: 0, queriedPools: 0, quotedPools: 0, failedPools: 0, budgetSkips: 0 };
+    this.counts = { requests: 0, queriedPools: 0, quotedPools: 0, failedPools: 0, budgetSkips: 0,
+      reservedBudgetSkips: 0, backoffSkips: 0, deadlineOverrides: 0, urgentPools: 0, rpcErrors: {} };
   }
-  stats() { return { ...this.counts, validationVersion: 2, enabled: !!this.c.shadow.stateQuotes, inFlight: this.busy }; }
+  stats() { return { ...this.counts, rpcErrors: { ...this.counts.rpcErrors }, schedulingVersion: 2, validationVersion: 2, enabled: !!this.c.shadow.stateQuotes, inFlight: this.busy }; }
   close() { this.closed = true; this.controller?.abort(); }
   async poll(targets) {
     if (this.closed || this.busy || !this.c.shadow.stateQuotes) return [];
@@ -46,8 +47,26 @@ class StateQuotes {
     const unique = new Map(targets.slice(0, 1000).map(s => [s.pool, s]));
     for (const [p, state] of this.pools) if (!unique.has(p) && at - state.lastAt > 300000) this.pools.delete(p);
     if (this.history.length >= cfg.stateQuoteRequestsPerMinute) { this.counts.budgetSkips++; return []; }
-    const selected = [...unique.values()].filter(s => at >= (this.pools.get(s.pool)?.nextAt || 0))
-      .sort((a, b) => (this.pools.get(a.pool)?.lastAt || 0) - (this.pools.get(b.pool)?.lastAt || 0)).slice(0, 20);
+    const candidates = [...unique.values()].map(s => {
+      const old = this.pools.get(s.pool);
+      const schedules = (s.schedules || []).filter(d => Number.isFinite(d.dueAt) && Number.isFinite(d.expiresAt) && d.expiresAt >= at);
+      const due = schedules.filter(d => d.dueAt <= at).sort((a, b) => a.expiresAt - b.expiresAt)[0];
+      // One fresh attempt after a newly due exit, even if an earlier quote set a long backoff.
+      const override = schedules.some(d => d.dueAt <= at && (old?.requestAt ?? -Infinity) < d.dueAt)
+        && (!old || at - old.lastAt >= 1000);
+      return { ...s, urgent: !!due, deadline: due?.expiresAt ?? Infinity, override,
+        soon: schedules.some(d => d.dueAt > at && d.dueAt - at <= 15000),
+        eligible: at >= (old?.nextAt || 0) || override };
+    });
+    this.counts.backoffSkips += candidates.filter(s => !s.eligible).length;
+    const eligible = candidates.filter(s => s.eligible);
+    // Reserve one of the existing minute budget slots for an imminent delayed exit.
+    if (!eligible.some(s => s.urgent) && candidates.some(s => s.soon)
+      && this.history.length >= Math.max(0, cfg.stateQuoteRequestsPerMinute - 1)) {
+      this.counts.reservedBudgetSkips++; return [];
+    }
+    const selected = eligible.sort((a, b) => Number(b.urgent) - Number(a.urgent) || a.deadline - b.deadline
+      || (this.pools.get(a.pool)?.lastAt || 0) - (this.pools.get(b.pool)?.lastAt || 0)).slice(0, 20);
     if (!selected.length) return [];
     const valid = [], results = [];
     for (const s of selected) {
@@ -64,9 +83,13 @@ class StateQuotes {
       const response = await this.request(this.c.rpcUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, signal: this.controller.signal,
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getMultipleAccounts', params: [keys,
           { encoding: 'base64', commitment: 'confirmed', minContextSlot: Math.max(...valid.map(s => s.slot)) }] }) });
-      if (!response.ok) fail(response.status === 429 ? 'rate_limited' : 'rpc_http_error');
+      if (!response.ok) { const e = new Error(); e.reason = response.status === 429 ? 'rate_limited' : 'rpc_http_error';
+        e.rpcDiagnostic = { category: e.reason, httpStatus: Number.isInteger(response.status) ? response.status : null }; throw e; }
       const body = await response.json();
-      if (body.error || !Array.isArray(body.result?.value) || body.result.value.length !== keys.length) fail('rpc_error');
+      if (body.error) { const e = new Error(); e.reason = 'rpc_error';
+        const code = Number.isSafeInteger(body.error.code) ? body.error.code : null;
+        e.rpcDiagnostic = { category: code === -32016 ? 'minimum_context_slot' : 'json_rpc_error', code }; throw e; }
+      if (!Array.isArray(body.result?.value) || body.result.value.length !== keys.length) fail('rpc_error');
       const slot = body.result.context?.slot;
       if (!Number.isSafeInteger(slot) || slot < Math.max(...valid.map(s => s.slot))) fail('stale_slot');
       if (this.now() - at > 3000 || this.now() < at) fail('stale_response');
@@ -74,19 +97,27 @@ class StateQuotes {
         try { results.push(this.result(s, at, this.decode(s, [s.pool, s.mint, s.baseVault, s.quoteVault].map(k => body.result.value[keys.indexOf(k)]), slot))); }
         catch (e) { results.push(this.result(s, at, null, e.reason || 'account_decode_failed', e.diagnostics)); }
       }
-    } catch (e) { for (const s of valid) results.push(this.result(s, at, null, e.reason || 'rpc_unavailable')); }
+    } catch (e) {
+      const diagnostic = e.rpcDiagnostic || { category: this.controller.signal.aborted ? 'timeout_or_abort' : e.reason || 'transport_error' };
+      this.counts.rpcErrors[diagnostic.category] = (this.counts.rpcErrors[diagnostic.category] || 0) + 1;
+      for (const s of valid) results.push(this.result(s, at, null, e.reason || 'rpc_unavailable', null, diagnostic));
+    }
     finally { clearTimeout(timeout); this.busy = false; this.controller = null; }
     return this.closed ? [] : results;
   }
-  result(s, requestAt, quote, reason = null, diagnostics = null) {
+  result(s, requestAt, quote, reason = null, diagnostics = null, rpcDiagnostic = null) {
     const at = this.now(), old = this.pools.get(s.pool), failures = quote ? 0 : (old?.failures || 0) + 1;
     const interval = this.c.shadow.stateQuoteIntervalMs;
     const delay = Math.min(Math.max(120000, interval), interval * 2 ** Math.min(failures, 4));
     this.pools.delete(s.pool);
-    this.pools.set(s.pool, { lastAt: at, nextAt: at + delay, failures });
+    this.pools.set(s.pool, { lastAt: at, requestAt, nextAt: at + delay, failures });
+    if (s.override) this.counts.deadlineOverrides++;
+    if (s.urgent) this.counts.urgentPools++;
     if (this.pools.size > 5000) this.pools.delete(this.pools.keys().next().value);
     this.counts[quote ? 'quotedPools' : 'failedPools']++;
-    return { type: 'state_quote', validationVersion: 2, accountDiagnostics: diagnostics || quote?.accountDiagnostics || null,
+    return { type: 'state_quote', schedulingVersion: 2, scheduling: { urgent: !!s.urgent, deadlineOverride: !!s.override,
+      expiresAt: Number.isFinite(s.deadline) ? s.deadline : null }, rpcDiagnostic,
+      validationVersion: 2, accountDiagnostics: diagnostics || quote?.accountDiagnostics || null,
       source: 'helius_account_state', pool: s.pool, mint: s.mint, requestAt, at,
       latencyMs: at - requestAt, status: quote ? 'quoted' : 'unavailable', reason, quote: quote && { ...quote, requestAt } };
   }

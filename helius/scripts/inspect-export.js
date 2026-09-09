@@ -13,7 +13,7 @@ async function inspect(directory) {
   const audit = { windowCounts: {}, coverageGapReasons: {}, featureReasons: {}, policies: {}, paper: { closed: 0, wins: 0, losses: 0, flat: 0, missingPnl: 0, grossPnlSol: 0 }, shadowHealth: { observations: 0, maxQueueDepth: 0, maxDroppedPerSession: 0, maxHistoryEvictionsPerSession: 0 } };
   const recoveryResults = new Map();
   const researchRecovery = new Map();
-  audit.stateQuotes = { quoted: 0, unavailable: 0, reasons: {}, discardReasons: {}, extensionRejections: {} };
+  audit.stateQuotes = { quoted: 0, unavailable: 0, reasons: {}, discardReasons: {}, extensionRejections: {}, rpcDiagnosticCategories: {}, rpcCodes: {}, urgentPools: 0, deadlineOverrides: 0 };
   audit.modelPredictions = { rebound: {}, drawdown: {} };
   const closes = new Set(), delays = [];
   const comparisons = new Map(), paperResults = new Map(), exitComparisons = new Map();
@@ -68,6 +68,10 @@ async function inspect(directory) {
           if (d.blockedExtensions?.length) for (const e of d.blockedExtensions) inc(audit.stateQuotes.extensionRejections, `${d.role}:${e.type}:${e.name}`);
           else inc(audit.stateQuotes.extensionRejections, `${d.role}:${d.reason}`);
         }
+        if (r.rpcDiagnostic?.category) inc(audit.stateQuotes.rpcDiagnosticCategories, r.rpcDiagnostic.category);
+        if (Number.isSafeInteger(r.rpcDiagnostic?.code)) inc(audit.stateQuotes.rpcCodes, String(r.rpcDiagnostic.code));
+        if (r.scheduling?.urgent) audit.stateQuotes.urgentPools++;
+        if (r.scheduling?.deadlineOverride) audit.stateQuotes.deadlineOverrides++;
         if (r.discardReason) inc(audit.stateQuotes.discardReasons, r.discardReason);
         if (r.status === 'quoted') audit.stateQuotes.quoted++;
         else { audit.stateQuotes.unavailable++; inc(audit.stateQuotes.reasons, r.reason || 'unknown'); }

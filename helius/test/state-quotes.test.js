@@ -148,6 +148,68 @@ const config = { maxActive: 100, maxActivePerPool: 100, maxHoldMs: 30000, maxGap
   exitDelayMs: 500, takeProfit: 20, stopLoss: 25, trailArm: 0, trailDrop: 3 };
 const sample = () => ({ id: 'a', source: { pool: 'p' }, last: { pool: 'p', slot: 1 },
   entry: { cost: 1, amount: 1, at: 0, openedAt: 0, high: 1, entryPrice: 1 }, strategyDone: true });
+
+test('deadline quote overrides old backoff once, reserves existing budget and respects hard cap', async () => {
+  const { s, time, calls } = service();
+  const t = { ...target(1), schedules: [{ dueAt: 12000, expiresAt: 22000 }] };
+  await s.poll([t]); // One ordinary request, one remaining request reserved for exit.
+  time(11000); assert.equal((await s.poll([t, target(2)])).length, 0);
+  assert.equal(s.stats().reservedBudgetSkips, 1);
+  time(12000); const rows = await s.poll([t]);
+  assert.equal(rows[0].scheduling.urgent, true); assert.equal(rows[0].scheduling.deadlineOverride, true);
+  assert.equal(rows[0].requestAt, 12000); assert.equal(calls.length, 2);
+  time(13000); assert.deepEqual(await s.poll([t]), []); assert.equal(calls.length, 2);
+});
+
+test('due exits outrank ordinary batches and failed due attempts do not retry every tick', async () => {
+  const { s, time, calls } = service();
+  const urgent = { ...target(100), schedules: [{ dueAt: 9000, expiresAt: 15000 }] };
+  const rows = await s.poll([...Array.from({ length: 25 }, (_, i) => target(i + 20)), urgent]);
+  assert.equal(rows[0].pool, urgent.pool); assert.equal(rows.length, 20);
+  assert.equal(calls.length, 1);
+  const failed = service({ request: async () => { throw new Error('secret'); } });
+  await failed.s.poll([urgent]); failed.time(11000);
+  assert.equal((await failed.s.poll([urgent])).length, 0);
+  time(16000); // Expired schedule must not gain a new override.
+  assert.equal((await s.poll([urgent])).length, 0);
+});
+
+test('state target aggregates all arm deadlines and pending exits without changing expiry', () => {
+  const { Tracker } = require('../src/shadow/tracker');
+  const r = new Recovery(config, () => {}, () => 1, 'state_exit_recovery');
+  const s = sample(); s.strategyDone = false;
+  r.add(s, 'pool_observation_gap', 11000);
+  const entry = [...r.active.values()][0]; entry.source = target(1); entry.pool = target(1).pool;
+  entry.pending = { dueAt: 12000 };
+  const targets = Tracker.prototype.stateTargets.call({ stateRecovery: r, lastOrder: new Map() });
+  assert.equal(targets[0].schedules[0].dueAt, 12000);
+  assert.equal(targets[0].schedules[0].expiresAt, 40500);
+  assert.equal(entry.deadlineAt, 30000);
+});
+
+test('max-hold recovery gets a post-due quote despite an earlier successful polling interval', async () => {
+  const events = [], r = new Recovery(config, e => events.push(e), q => q.net, 'state_exit_recovery');
+  const entry = sample(); entry.strategyDone = false; entry.source.pool = target(1).pool; entry.last = { ...target(1), price: 1 };
+  r.add(entry, 'pool_observation_gap', 11000);
+  const { Tracker } = require('../src/shadow/tracker');
+  const targets = () => Tracker.prototype.stateTargets.call({ stateRecovery: r, lastOrder: new Map() });
+  const h = service({ decode: (t, _, slot) => ({ pool: t.pool, slot, price: 1, net: 1 }) });
+  h.time(29000); const early = await h.s.poll(targets());
+  r.observe(early[0].quote, early[0].at); assert.equal(r.active.size, 1);
+  h.time(30500); const due = await h.s.poll(targets());
+  r.observe(due[0].quote, due[0].at);
+  assert.equal(r.active.size, 0); assert.equal(events.at(-1).reason, 'max_hold');
+  assert.equal(events.at(-1).quoteRequestAt, 30500);
+  assert.equal(events.at(-1).status, 'account_state_proxy');
+});
+
+test('RPC diagnostics retain only safe numeric codes and categories', async () => {
+  const h = service({ request: async () => ({ ok: true, json: async () => ({ error: { code: -32016, message: 'https://secret/?api-key=private', data: 'private' } }) }) });
+  const row = (await h.s.poll([target(1)]))[0];
+  assert.deepEqual(row.rpcDiagnostic, { category: 'minimum_context_slot', code: -32016 });
+  assert.ok(!JSON.stringify(row).includes('private'));
+  assert.equal(h.s.stats().rpcErrors.minimum_context_slot, 1);
+});
 test('30 and 50 percent targets differ, share entry and retain their stop policies', () => {
   const events = [], x = new ExitComparisons(config, e => events.push(e)), s = sample();
   x.observe(s, { price: 1.25 }, 1.2, 1000); x.observe(s, { price: 1.35 }, 1.3, 1500);

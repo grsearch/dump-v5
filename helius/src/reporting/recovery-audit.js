@@ -6,8 +6,10 @@ function recoveryAudit(records, outcomes) {
     const meta = { runId: r.runId, policyId: r.policyId, type: r.type, variant: r.variant,
       recoveryVersion: r.recoveryVersion, selectionId: r.selection?.selectionId ?? null, modelIds: r.selection?.modelIds ?? null };
     const key = JSON.stringify(meta);
-    if (!groups.has(key)) groups.set(key, { ...meta, all: {}, joint: {}, highRebound: {} });
-    for (const name of ['all', 'joint', 'highRebound']) {
+    const names = ['all', 'joint', 'highRebound', ...['avoidWeakBuy', 'avoidPriorFall', 'avoidLargeDump', 'prebuyCombined'].filter(n => r.selection?.arms?.[n])];
+    if (!groups.has(key)) groups.set(key, { ...meta });
+    for (const name of names) {
+      groups.get(key)[name] ||= {};
       if (name !== 'all' && r.selection?.arms?.[name]?.status !== 'pass') continue;
       const b = groups.get(key)[name]; b.records = (b.records || 0) + 1;
       if (r.phase !== 'finished') { b.pending = (b.pending || 0) + 1; continue; }
