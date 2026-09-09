@@ -304,3 +304,25 @@ session新增stateQuoteSchedulingVersion=2、selectionVersion=3；exitResearchVe
 日志paper_prebuy_filter及shadow decision包含version=1、scope=paper_only、selectionId、status、rejected、unknown、waitMs和跳过reason；归档自动收录。纸面收益比较要注意新增后台等待和信号过期带来的样本差异，不能把所有差额归因于过滤本身。
 
 现有.env未设置新字段时默认开启；设PAPER_PREBUY_FILTER=false可恢复原纸面入场。启用需要SHADOW_ENABLED=true和正常后台线程。重启后核对starting.strategyConfig.paperPrebuyFilter=true及DRY_RUN=true，再检查至少一条paper_prebuy_filter；已知危险候选应有prebuy_risk_filter跳过记录，后台sample仍保留。模型无需重装，退出规则与每笔1 SOL配置保持原样。
+
+### slot追赶重试、历史未知对照和执行成本汇总
+
+最新session标记selectionVersion=4、stateQuoteSchedulingVersion=3；退出研究仍为exitResearchVersion=3，9组退出参数不变。
+
+仅对RPC -32016 / minimum_context_slot，前三次连续失败分别安排2、4、8秒后可重试；第四次及之后回到原普通指数退避。成功或其他错误会重置这一短重试序列。重试通过原poll调度，仍受每分钟预算、到期优先和预留限制，不是额外请求通道，不降低minContextSlot、不改变confirmed、不延长持仓截止。实际重试可能因预算耗尽延后或无法进行。
+
+state_quote新增requestedMinContextSlot；RPC错误若含合法数值contextSlot则记录在rpcDiagnostic中，不保存data原文。scheduling新增retryKind（slot_catchup/ordinary）及nextEligibleAt。quality.json的slotCatchupScheduledPools统计安排短重试的池级结果，不能当成实际已执行重试批次。部署后比较-32016失败率、到期完成率及预算占用，不能只看请求量增加。
+
+新增三个独立买前研究分组：
+
+| 名称 | 规则 |
+|---|---|
+| prebuyAllowUnknown | 新鲜候选且无已知危险，允许历史未知 |
+| prebuyRequireKnown | 三项均已知且通过；历史未知明确拒绝 |
+| prebuyUnknownOnly | 只观察无已知危险但历史未知的子集 |
+
+prebuyCombined保留原有三态语义，不修改纸面引擎的未知处理。新组是候选级对照，不模拟独立资金、持仓上限及冷却组合。未知“特征”可以按预设规则拒绝，未知“结果”仍不可填零；连续标签与账户恢复分开统计。quality.json的selectionValidation和researchRecovery自动包含新分组，旧版本可继续分析并按规则ID隔离。
+
+execution-audit.json升级schema=2，保留原totals和rows，新增costSummary：汇总同一配对子集的paper/proxy收益、时机/退出规则差、曲线冲击、费用和滑点，分别按实际paper_prebuy_filter状态与策略ID分组。components仅包含reconciled行；与全部matched不是同一子集时分别给出数量及收益。缺少入场判断记unmatched，不推定为通过；未知对照不填零。另提供入场时差、过滤等待的p50/p95，这些不是链上成交速度或真实手续费。
+
+无需新配置、无需重装模型或调整COS定时器。更新后先导出15分钟，核对session版本、新selection组以及execution-audit.json的costSummary；若窗口没有-32016错误，短重试计数为零是正常的。当前三项危险拦截、1 SOL金额、20%止盈和25%止损保持不变。

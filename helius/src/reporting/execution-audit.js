@@ -27,7 +27,7 @@ function decompose(paperPnl, comparison) {
 async function executionAudit(directory) {
   const quality = await require('../../scripts/inspect-export').inspect(directory);
   const start = Date.parse(quality.window.start), end = Date.parse(quality.window.endExclusive);
-  const sells = new Map(), comparisons = new Map();
+  const sells = new Map(), comparisons = new Map(), filters = new Map();
   const input = fs.createReadStream(path.join(directory, 'analysis.jsonl.gz')), unzip = zlib.createGunzip();
   input.on('error', e => unzip.destroy(e)); input.pipe(unzip);
   try {
@@ -35,13 +35,18 @@ async function executionAudit(directory) {
       const { dataset, record: r } = JSON.parse(line), at = r.at ?? Date.parse(r.time);
       if (dataset === 'trading' && r.type === 'paper_sell' && at >= start && at < end && r.positionId && r.pool) sells.set(`${r.positionId}:${r.pool}`, r);
       if (dataset === 'shadow' && r.type === 'execution_comparison') comparisons.set(r.key, r);
-      if (sells.size > 100000 || comparisons.size > 100000) throw new Error('Execution audit size limit exceeded');
+      if (dataset === 'trading' && r.type === 'paper_prebuy_filter' && at < end && r.signature && r.pool) filters.set(`${r.signature}:${r.pool}`, r);
+      if (sells.size > 100000 || comparisons.size > 100000 || filters.size > 100000) throw new Error('Execution audit size limit exceeded');
     }
   } finally { input.destroy(); unzip.destroy(); }
   const rows = [], totals = { paperCloses: sells.size, matchedObserved: 0, noComparison: 0, censored: 0,
     missingPaperPnl: 0, reconciled: 0, legacyMissingBreakdown: 0, mismatchedBreakdown: 0, paperPnlSol: 0, proxyPnlSol: 0 };
   for (const [key, p] of sells) {
     const c = comparisons.get(key), row = { key, mint: p.mint, paper: { openedAt: p.openedAt, closedAt: Date.parse(p.time), reason: p.reason, pnlSol: p.grossPnlSol }, diagnostic: p.diagnostic };
+    const filter = filters.get(key);
+    row.policyId = c?.policyId ?? null;
+    row.prebuyStatus = ['pass', 'unknown', 'reject', 'unavailable'].includes(filter?.status) ? filter.status : 'unmatched';
+    row.prebuyWaitMs = Number.isFinite(filter?.waitMs) ? filter.waitMs : null;
     if (!c) { totals.noComparison++; row.status = 'no_comparison_in_archive'; }
     else if (c.status !== 'observed_proxy' || !Number.isFinite(c.netPnlSol)) { totals.censored++; row.status = 'proxy_unknown'; row.reason = c.reason; }
     else if (!Number.isFinite(p.grossPnlSol)) { totals.missingPaperPnl++; row.status = 'missing_paper_pnl'; }
@@ -58,7 +63,30 @@ async function executionAudit(directory) {
     }
     rows.push(row);
   }
-  return { schema: 1, window: quality.window, totals, migrationPipeline: quality.audit.migrationPipeline,
+  return { schema: 2, window: quality.window, totals, costSummary: costSummary(rows), migrationPipeline: quality.audit.migrationPipeline,
     note: 'Signed accounting bridge under fixed proxy assumptions, not causal attribution or actual fees. Timing term also includes exit-rule and position-size differences. Missing observations remain unknown.', rows };
 }
-module.exports = { executionAudit, decompose };
+function costSummary(rows) {
+  function summarize(list) {
+    const matched = list.filter(r => r.status === 'matched'), reconciled = matched.filter(r => r.decomposition?.status === 'reconciled');
+    const sum = (a, f) => a.length ? a.reduce((n, r) => n + f(r), 0) : null;
+    const components = {};
+    for (const r of reconciled) for (const [k, v] of Object.entries(r.decomposition.components)) components[k] = (components[k] || 0) + v;
+    const quantiles = values => {
+      values = values.filter(Number.isFinite).sort((a, b) => a - b);
+      return { count: values.length, p50: values[Math.floor(values.length * .5)] ?? null, p95: values[Math.floor(values.length * .95)] ?? null };
+    };
+    return { closes: list.length, matched: matched.length, unknown: list.length - matched.length,
+      matchedPaperSol: sum(matched, r => r.paper.pnlSol), matchedProxySol: sum(matched, r => r.proxy.pnlSol),
+      reconciled: reconciled.length, reconciledPaperSol: sum(reconciled, r => r.paper.pnlSol), reconciledProxySol: sum(reconciled, r => r.proxy.pnlSol),
+      components: reconciled.length ? components : null,
+      entryTimeDifferenceMs: quantiles(matched.map(r => r.entryTimeDifferenceMs)), prebuyWaitMs: quantiles(list.map(r => r.prebuyWaitMs)) };
+  }
+  const byPrebuyStatus = {}, byPolicy = {};
+  for (const status of new Set(rows.map(r => r.prebuyStatus || 'unmatched'))) byPrebuyStatus[status] = summarize(rows.filter(r => (r.prebuyStatus || 'unmatched') === status));
+  const policyKey = r => r.policyId || r.proxy?.policyId || 'unmatched';
+  for (const policy of new Set(rows.map(policyKey))) byPolicy[policy] = summarize(rows.filter(r => policyKey(r) === policy));
+  return { version: 1, scope: 'Paired paper closes only. Component sums cover reconciled rows only; not realized fees or causal savings. Unknown comparisons are excluded, never zero returns.',
+    all: summarize(rows), byPrebuyStatus, byPolicy };
+}
+module.exports = { executionAudit, decompose, costSummary };

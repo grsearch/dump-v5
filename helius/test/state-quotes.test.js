@@ -210,6 +210,36 @@ test('RPC diagnostics retain only safe numeric codes and categories', async () =
   assert.ok(!JSON.stringify(row).includes('private'));
   assert.equal(h.s.stats().rpcErrors.minimum_context_slot, 1);
 });
+
+test('slot catchup uses bounded short retries without lowering the required slot', async () => {
+  const requests = [];
+  const h = service({ request: async (_, options) => {
+    requests.push(JSON.parse(options.body)); return { ok: true, json: async () => ({ error: { code: -32016, data: { contextSlot: 90, secret: 'private' } } }) };
+  } });
+  h.c.shadow.stateQuoteRequestsPerMinute = 10;
+  for (const [at, next] of [[10000, 12000], [12000, 16000], [16000, 24000], [24000, 144000]]) {
+    h.time(at); const row = (await h.s.poll([target(1)]))[0];
+    assert.equal(row.scheduling.nextEligibleAt, next); assert.equal(row.requestedMinContextSlot, 100);
+    assert.equal(row.rpcDiagnostic.contextSlot, 90); assert.ok(!JSON.stringify(row).includes('private'));
+    h.time(next - 1); assert.deepEqual(await h.s.poll([target(1)]), []);
+  }
+  assert.ok(requests.every(r => r.params[1].minContextSlot === 100 && r.params[1].commitment === 'confirmed'));
+  assert.equal(requests.length, 4);
+});
+
+test('slot retries still respect minute budget and successful quote resets the short retry series', async () => {
+  let count = 0;
+  const h = service({ request: async (_, options) => {
+    count++; const keys = JSON.parse(options.body).params[0];
+    return { ok: true, json: async () => count === 1 || count === 3 ? { error: { code: -32016 } }
+      : { result: { context: { slot: 101 }, value: keys.map(() => ({})) } } };
+  } });
+  await h.s.poll([target(1)]); h.time(12000);
+  assert.equal((await h.s.poll([target(1)]))[0].status, 'quoted');
+  h.time(30000); assert.deepEqual(await h.s.poll([target(1)]), []); assert.equal(count, 2);
+  h.time(70001); const row = (await h.s.poll([target(1)]))[0];
+  assert.equal(row.scheduling.nextEligibleAt, 72001);
+});
 test('30 and 50 percent targets differ, share entry and retain their stop policies', () => {
   const events = [], x = new ExitComparisons(config, e => events.push(e)), s = sample();
   x.observe(s, { price: 1.25 }, 1.2, 1000); x.observe(s, { price: 1.35 }, 1.3, 1500);

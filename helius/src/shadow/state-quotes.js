@@ -38,7 +38,7 @@ class StateQuotes {
     this.counts = { requests: 0, queriedPools: 0, quotedPools: 0, failedPools: 0, budgetSkips: 0,
       reservedBudgetSkips: 0, backoffSkips: 0, deadlineOverrides: 0, urgentPools: 0, rpcErrors: {} };
   }
-  stats() { return { ...this.counts, rpcErrors: { ...this.counts.rpcErrors }, schedulingVersion: 2, validationVersion: 2, enabled: !!this.c.shadow.stateQuotes, inFlight: this.busy }; }
+  stats() { return { ...this.counts, rpcErrors: { ...this.counts.rpcErrors }, schedulingVersion: 3, validationVersion: 2, enabled: !!this.c.shadow.stateQuotes, inFlight: this.busy }; }
   close() { this.closed = true; this.controller?.abort(); }
   async poll(targets) {
     if (this.closed || this.busy || !this.c.shadow.stateQuotes) return [];
@@ -75,6 +75,8 @@ class StateQuotes {
       } catch (_) { results.push(this.result(s, at, null, 'invalid_target')); }
     }
     if (!valid.length) return results;
+    const requestedMinContextSlot = Math.max(...valid.map(s => s.slot));
+    for (const s of valid) s.requestedMinContextSlot = requestedMinContextSlot;
     this.busy = true; this.controller = new AbortController();
     const timeout = setTimeout(() => this.controller?.abort(), 3000);
     this.history.push(at); this.counts.requests++; this.counts.queriedPools += valid.length;
@@ -82,13 +84,16 @@ class StateQuotes {
       const keys = [...new Set(valid.flatMap(s => [s.pool, s.mint, s.baseVault, s.quoteVault]))];
       const response = await this.request(this.c.rpcUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, signal: this.controller.signal,
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getMultipleAccounts', params: [keys,
-          { encoding: 'base64', commitment: 'confirmed', minContextSlot: Math.max(...valid.map(s => s.slot)) }] }) });
+          { encoding: 'base64', commitment: 'confirmed', minContextSlot: requestedMinContextSlot }] }) });
       if (!response.ok) { const e = new Error(); e.reason = response.status === 429 ? 'rate_limited' : 'rpc_http_error';
         e.rpcDiagnostic = { category: e.reason, httpStatus: Number.isInteger(response.status) ? response.status : null }; throw e; }
       const body = await response.json();
       if (body.error) { const e = new Error(); e.reason = 'rpc_error';
         const code = Number.isSafeInteger(body.error.code) ? body.error.code : null;
-        e.rpcDiagnostic = { category: code === -32016 ? 'minimum_context_slot' : 'json_rpc_error', code }; throw e; }
+        e.rpcDiagnostic = { category: code === -32016 ? 'minimum_context_slot' : 'json_rpc_error', code };
+        if (code === -32016 && Number.isSafeInteger(body.error.data?.contextSlot) && body.error.data.contextSlot >= 0)
+          e.rpcDiagnostic.contextSlot = body.error.data.contextSlot;
+        throw e; }
       if (!Array.isArray(body.result?.value) || body.result.value.length !== keys.length) fail('rpc_error');
       const slot = body.result.context?.slot;
       if (!Number.isSafeInteger(slot) || slot < Math.max(...valid.map(s => s.slot))) fail('stale_slot');
@@ -108,15 +113,19 @@ class StateQuotes {
   result(s, requestAt, quote, reason = null, diagnostics = null, rpcDiagnostic = null) {
     const at = this.now(), old = this.pools.get(s.pool), failures = quote ? 0 : (old?.failures || 0) + 1;
     const interval = this.c.shadow.stateQuoteIntervalMs;
-    const delay = Math.min(Math.max(120000, interval), interval * 2 ** Math.min(failures, 4));
+    const slotFailures = rpcDiagnostic?.category === 'minimum_context_slot' ? (old?.slotFailures || 0) + 1 : 0;
+    // A lagging confirmed node is not an invalid token account. Retry briefly, but only through poll's existing budget.
+    const slotRetry = slotFailures > 0 && slotFailures <= 3;
+    const delay = slotRetry ? 1000 * 2 ** slotFailures : Math.min(Math.max(120000, interval), interval * 2 ** Math.min(failures, 4));
     this.pools.delete(s.pool);
-    this.pools.set(s.pool, { lastAt: at, requestAt, nextAt: at + delay, failures });
+    this.pools.set(s.pool, { lastAt: at, requestAt, nextAt: at + delay, failures, slotFailures });
     if (s.override) this.counts.deadlineOverrides++;
     if (s.urgent) this.counts.urgentPools++;
     if (this.pools.size > 5000) this.pools.delete(this.pools.keys().next().value);
     this.counts[quote ? 'quotedPools' : 'failedPools']++;
-    return { type: 'state_quote', schedulingVersion: 2, scheduling: { urgent: !!s.urgent, deadlineOverride: !!s.override,
-      expiresAt: Number.isFinite(s.deadline) ? s.deadline : null }, rpcDiagnostic,
+    return { type: 'state_quote', schedulingVersion: 3, scheduling: { urgent: !!s.urgent, deadlineOverride: !!s.override,
+      expiresAt: Number.isFinite(s.deadline) ? s.deadline : null, retryKind: slotRetry ? 'slot_catchup' : 'ordinary', nextEligibleAt: at + delay },
+      requestedMinContextSlot: s.requestedMinContextSlot ?? null, rpcDiagnostic,
       validationVersion: 2, accountDiagnostics: diagnostics || quote?.accountDiagnostics || null,
       source: 'helius_account_state', pool: s.pool, mint: s.mint, requestAt, at,
       latencyMs: at - requestAt, status: quote ? 'quoted' : 'unavailable', reason, quote: quote && { ...quote, requestAt } };

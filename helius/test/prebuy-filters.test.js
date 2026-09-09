@@ -34,3 +34,31 @@ test('new selection groups reach export and independent recovery without inventi
   assert.equal(audit.groups[0].prebuyCombined.unknown, 1);
   assert.equal(audit.groups[0].prebuyCombined.estimatedNetSol, undefined);
 });
+
+test('unknown history policy arms distinguish explicit history rejection from risk rejection', () => {
+  const s = snapshot(); s.ready = false;
+  const unknown = select(s);
+  assert.equal(unknown.arms.prebuyAllowUnknown.status, 'pass');
+  assert.equal(unknown.arms.prebuyRequireKnown.status, 'reject');
+  assert.equal(unknown.arms.prebuyUnknownOnly.status, 'pass');
+  assert.equal(unknown.arms.prebuyCombined.status, 'unknown');
+  s.values.sellSol = 40;
+  const risk = select(s);
+  for (const name of ['prebuyAllowUnknown', 'prebuyRequireKnown', 'prebuyUnknownOnly']) assert.equal(risk.arms[name].status, 'reject');
+  const good = select(snapshot());
+  assert.equal(good.arms.prebuyRequireKnown.status, 'pass');
+  assert.equal(good.arms.prebuyUnknownOnly.status, 'reject');
+  assert.equal(selection({}, {}, false, null, s).arms.prebuyAllowUnknown.status, 'reject');
+});
+
+test('strict history comparison exports the missed outcome without turning missing labels into losses', () => {
+  const s = snapshot(); s.ready = false;
+  const sample = { id: 'a', key: 'a', at: 1000, runId: 'r', policyId: 'p', selection: select(s) };
+  const outcomes = new Map([['a:strategy_proxy', { at: 2000, status: 'observed_proxy', policyId: 'p', netPnlSol: -.4, entryCostSol: 1 }]]);
+  const report = selectionValidation(new Map([['a', sample]]), outcomes, { start: new Date(0).toISOString(), endExclusive: new Date(3000).toISOString() });
+  const g = report.groups[0];
+  assert.equal(g.arms.prebuyAllowUnknown.selectedNetSol, -.4);
+  assert.equal(g.arms.prebuyRequireKnown.pairedDifferenceSol, .4);
+  assert.equal(g.arms.prebuyRequireKnown.selectedNetSol, null);
+  assert.equal(g.reboundBySelection.prebuyUnknownOnly.unknown, 1);
+});

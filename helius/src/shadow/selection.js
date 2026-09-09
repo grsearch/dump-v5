@@ -1,7 +1,8 @@
 'use strict';
 const crypto = require('node:crypto');
 // Predeclared research thresholds, never optimized on the evaluation window.
-const RULES = Object.freeze({ version: 3, minReboundProbability: 0.6, highReboundProbability: 0.8, maxDrawdownProbability: 0.25, maxLoss25Probability: 0.25, minExpectedNetReturn: 0,
+const RULES = Object.freeze({ version: 4, minReboundProbability: 0.6, highReboundProbability: 0.8, maxDrawdownProbability: 0.25, maxLoss25Probability: 0.25, minExpectedNetReturn: 0,
+  unknownHistoryComparison: 'allow_vs_reject_with_unknown_subgroup',
   minPriorBuyFraction15: 0.2, minPriorReturn60Pct: -20, maxDumpSolExclusive: 40 });
 const ID = crypto.createHash('sha256').update(JSON.stringify(RULES)).digest('hex').slice(0, 16);
 function selection(experiments, predictions, fresh, rebound, snapshot) {
@@ -38,7 +39,13 @@ function selection(experiments, predictions, fresh, rebound, snapshot) {
     arms[name] = { status: rejected.length ? 'reject' : unknown.length ? 'unknown' : 'pass',
       rejected: rejected.map(k => ({ check: k, reason: checks[k].reason })), unknown: unknown.map(k => ({ check: k, reason: checks[k].reason })) };
   }
-  return { version: 3, selectionId: ID, rules: RULES, marketExperimentId: experiments.experimentId,
+  const prebuy = arms.prebuyCombined;
+  arms.prebuyAllowUnknown = { ...prebuy, status: prebuy.status === 'unknown' ? 'pass' : prebuy.status };
+  arms.prebuyRequireKnown = { ...prebuy, status: prebuy.status === 'unknown' ? 'reject' : prebuy.status,
+    rejected: prebuy.status === 'unknown' ? [...prebuy.unknown.map(x => ({ ...x, reason: 'history_required:' + x.reason }))] : prebuy.rejected };
+  arms.prebuyUnknownOnly = { ...prebuy, status: prebuy.status === 'unknown' ? 'pass' : 'reject',
+    rejected: prebuy.status === 'pass' ? [{ check: 'history', reason: 'known_history_not_in_unknown_subgroup' }] : prebuy.rejected };
+  return { version: 4, selectionId: ID, rules: RULES, marketExperimentId: experiments.experimentId,
     modelIds: { rebound: rebound?.modelId || null, drawdown: drawdown?.modelId || null, risk: risk?.modelId || null, net: net?.modelId || null }, scope: 'observation_only_candidate_filter', checks, arms };
 }
 module.exports = { selection };
