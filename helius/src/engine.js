@@ -18,7 +18,7 @@ class Engine {
     this.shadow = shadow;
     this.migrationDiagnostics = {}; this.migrationDiagnosticSamples = 0;
   }
-  shadowEvent(method, ...args) { try { return this.shadow?.[method](...args); } catch (_) { /* Observation cannot veto or crash trading. */ } }
+  shadowEvent(method, ...args) { try { return this.shadow?.[method](...args); } catch (_) { /* Paper filter handles unavailable results; errors never escape the sidecar. */ } }
   onTransaction(result) {
     if (this.stopped || !result.signature || this.seen.has(result.signature)) return;
     this.seen.set(result.signature, Date.now()); this.ticks++;
@@ -30,7 +30,7 @@ class Engine {
       }
     })) {
       this.swaps++;
-      this.shadowEvent('observe', swap, matchesBaseSignal(swap, this.c), isSignal(swap, this.c));
+      const filter = this.shadowEvent('observe', swap, matchesBaseSignal(swap, this.c), isSignal(swap, this.c));
       const previous = this.lastSlots.get(swap.pool);
       if (previous && swap.slot < previous.slot) continue;
       this.lastSlots.set(swap.pool, { slot: swap.slot, at: Date.now() });
@@ -45,7 +45,7 @@ class Engine {
         const reason = exitReason(p, swap.price, this.c);
         if (reason) this.sell(p, reason).catch(e => this.error('sell', e));
       }
-      if (isSignal(swap, this.c)) this.buy(swap).catch(e => this.error('buy', e));
+      if (isSignal(swap, this.c)) this.buy(swap, filter).catch(e => this.error('buy', e));
     }
   }
   error(stage, err) {
@@ -55,7 +55,21 @@ class Engine {
     this.store.log('operation_error', { stage, error: message });
   }
   pending() { return Object.keys(this.data.pending).length > 0; }
-  async buy(swap) {
+  async buy(swap, filter) {
+    if (this.c.dryRun && this.c.paperPrebuyFilter) {
+      const startedAt = Date.now();
+      // Same pre-dump snapshot as the research worker; no duplicate history or RPC.
+      const result = swap.sellSol >= 40 ? { arm: { status: 'reject', rejected: [{ check: 'dumpSize', reason: 'dump_size_below_40_sol' }] } }
+        : await filter;
+      const arm = result?.arm;
+      const reason = !arm ? 'prebuy_filter_unavailable' : arm.status === 'reject' ? 'prebuy_risk_filter'
+        : !isSignal(swap, this.c) ? 'expired_after_prebuy_filter' : null;
+      const detail = { version: 1, scope: 'paper_only', selectionId: result?.selectionId ?? null,
+        status: arm?.status || 'unavailable', rejected: arm?.rejected || [], unknown: arm?.unknown || [], waitMs: Date.now() - startedAt };
+      this.store.log('paper_prebuy_filter', { mint: swap.mint, pool: swap.pool, signature: swap.signature, ...detail, reason });
+      this.shadowEvent('decision', swap, reason ? 'skipped' : 'prebuy_filter_checked', { reason, prebuyFilter: detail });
+      if (reason) return;
+    }
     const now = Date.now();
     const reason = this.stopped ? 'stopped' : this.busy ? 'wallet_busy' : this.reconciling ? 'reconciling'
       : this.pending() ? 'pending_transaction' : !this.stream.connected ? 'stream_disconnected'

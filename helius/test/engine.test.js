@@ -9,7 +9,7 @@ const c = readConfig({ HELIUS_API_KEY: 'test' });
 function setup(extra = {}) {
   const store = { data: { positions: {}, cleanup: {}, cooldown: {}, pending: {}, seen: {}, streamDays: {} }, save() {}, log() {} };
   const stream = { connected: true, budgetExceeded: () => false };
-  return { store, stream, engine: new Engine({ ...c, ...extra }, store, {}, stream) };
+  return { store, stream, engine: new Engine({ ...c, paperPrebuyFilter: false, ...extra }, store, {}, stream) };
 }
 test('configuration rejects unsafe booleans, numbers and non-Helius endpoints', () => {
   for (const env of [{ DRY_RUN: 'tru' }, { MIN_SELL_SOL: 'NaN' }, { HELIUS_SENDER_URL: 'https://other.com' }, { HELIUS_WS_URL: 'wss://helius-rpc.com.attacker.com' }, { SENDER_TIP_LAMPORTS: 0 }, { DRY_RUN: 'false' }]) {
@@ -37,6 +37,49 @@ test('paper buy never calls executor and is deduplicated', async () => {
   await engine.sell(store.data.positions[s.mint], 'test');
   assert.equal(Object.keys(store.data.positions).length, 0);
   assert.equal(Object.keys(store.data.cleanup).length, 0);
+});
+
+test('paper prebuy rejects each risk before spending capacity, cooldown or preparing', async () => {
+  for (const check of ['priorBuy', 'priorReturn', 'dumpSize']) {
+    const { engine, store } = setup({ paperPrebuyFilter: true });
+    const s = { ...parseSwaps(fixture())[0], impact: 20, sellSol: check === 'dumpSize' ? 40 : 10 };
+    await engine.buy(s, Promise.resolve({ arm: { status: 'reject', rejected: [{ check }] } }));
+    assert.equal(Object.keys(store.data.positions).length, 0);
+    assert.equal(engine.candidates, 0); assert.equal(store.data.cooldown[s.mint], undefined);
+  }
+});
+
+test('paper prebuy passes known-safe and explicit unknown history but skips unavailable worker', async () => {
+  for (const status of ['pass', 'unknown', null]) {
+    const { engine, store } = setup({ paperPrebuyFilter: true });
+    const s = { ...parseSwaps(fixture())[0], impact: 20, sellSol: 10 };
+    await engine.buy(s, Promise.resolve(status ? { arm: { status, unknown: status === 'unknown' ? [{ check: 'priorBuy' }] : [] } } : null));
+    assert.equal(Object.keys(store.data.positions).length, status ? 1 : 0);
+  }
+});
+
+test('paper prebuy rechecks freshness and portfolio limits after asynchronous result', async () => {
+  const { engine, store } = setup({ paperPrebuyFilter: true });
+  const s = { ...parseSwaps(fixture())[0], impact: 20, sellSol: 10 };
+  let release;
+  const pending = engine.buy(s, new Promise(r => { release = r; }));
+  engine.busy = true; release({ arm: { status: 'pass' } }); await pending;
+  assert.equal(Object.keys(store.data.positions).length, 0);
+  engine.busy = false; s.receivedAt = Date.now() - 10000;
+  await engine.buy(s, Promise.resolve({ arm: { status: 'pass' } }));
+  assert.equal(Object.keys(store.data.positions).length, 0);
+});
+
+test('paper rejection still observes the candidate and live execution does not wait for paper filter', async () => {
+  const { engine, store } = setup({ paperPrebuyFilter: true }); let observed = 0;
+  engine.shadow = { observe: () => { observed++; return Promise.resolve({ arm: { status: 'reject', rejected: [{ check: 'priorBuy' }] } }); } };
+  engine.onTransaction(fixture({ virtual: 100000000000n }));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(observed, 1); assert.equal(Object.keys(store.data.positions).length, 0);
+  const live = setup({ dryRun: false, paperPrebuyFilter: true }).engine;
+  let built = false; live.executor = { buildSwap: async () => { built = true; throw new Error('test build'); } };
+  const buy = live.buy(parseSwaps(fixture())[0], new Promise(() => {}));
+  assert.equal(built, true); await assert.rejects(buy, /test build/);
 });
 test('budget limit, stream failure and pending tx prevent entries', async () => {
   for (const kind of ['budget', 'stream', 'pending']) {

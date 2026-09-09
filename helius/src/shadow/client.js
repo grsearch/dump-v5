@@ -7,6 +7,7 @@ class ShadowClient {
     this.status = { status: 'disabled' }; this.enabled = !!c.shadow?.enabled;
     this.queue = []; this.inFlight = false; this.scheduled = false; this.dropped = 0; this.needsGap = false;
     this.accepting = true; this.exited = false; this.drain = null;
+    this.paperFilter = c.dryRun && c.paperPrebuyFilter; this.filters = new Map(); this.filterSequence = 0;
     if (!this.enabled) return;
     this.stateQuotes = new (require('./state-quotes').StateQuotes)(c);
     // Never serialize the wallet secret or the API URL/key into a learning event or workerData.
@@ -20,6 +21,7 @@ class ShadowClient {
         resourceLimits: { maxOldGenerationSizeMb: 256 }, env: {} });
       this.status = { status: 'starting' };
       this.worker.on('message', msg => {
+        if (msg.type === 'paper_filter') this.filters.get(msg.filterId)?.(msg.selection);
         if (msg.type === 'ack') { this.inFlight = false; this.pump(); }
         if (msg.type === 'status') this.status = msg.value;
         if (msg.type === 'state_quote_request' && this.accepting) {
@@ -47,7 +49,19 @@ class ShadowClient {
     try { this.worker.postMessage({ type: 'batch', events }); }
     catch (_) { this.enabled = false; this.status = { status: 'worker_send_error' }; }
   }
-  observe(swap, candidate, fresh) { this.enqueue({ type: 'swap', swap: { ...swap }, candidate, fresh }); }
+  observe(swap, candidate, fresh) {
+    let filterId, result;
+    if (this.paperFilter && candidate && fresh && this.enabled && this.accepting && this.filters.size < 128) {
+      filterId = ++this.filterSequence;
+      result = new Promise(resolve => {
+        const finish = value => { clearTimeout(timer); this.filters.delete(filterId); resolve(value); };
+        const timer = setTimeout(() => finish(null), 250);
+        this.filters.set(filterId, finish);
+      });
+    }
+    this.enqueue({ type: 'swap', swap: { ...swap }, candidate, fresh, filterId });
+    return result;
+  }
   poolCreated(event) { this.enqueue({ type: 'pool_created', event }); }
   connection(connected) { this.enqueue({ type: 'connection', connected, at: Date.now() }); }
   decision(swap, status, extra = {}) {
@@ -56,6 +70,7 @@ class ShadowClient {
   stats() { return { ...this.status, stateQuotes: this.stateQuotes?.stats() ?? null, queueDepth: this.queue.length, dropped: this.dropped }; }
   async close() {
     this.accepting = false;
+    for (const finish of this.filters.values()) finish(null);
     this.stateQuotes?.close();
     if (!this.worker || this.exited) return;
     await new Promise(resolve => {

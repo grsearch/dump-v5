@@ -51,7 +51,11 @@ parentPort.on('message', msg => {
   if (msg.type !== 'batch') return;
   for (const event of msg.events) {
     if (event.type === 'state_quotes') tracker.stateQuotes(event.results);
-    if (event.type === 'swap') tracker.onSwap(event.swap, event.candidate, event.fresh);
+    if (event.type === 'swap') {
+      const selection = tracker.onSwap(event.swap, event.candidate, event.fresh);
+      if (event.filterId) parentPort.postMessage({ type: 'paper_filter', filterId: event.filterId,
+        selection: selection ? { selectionId: selection.selectionId, arm: selection.arms.prebuyCombined } : null });
+    }
     if (event.type === 'pool_created' && tracker.ages.created(event.event)) {
       ageDirty = true; tracker.emit({ type: 'pump_migrated', at: event.event.observedAt, ...event.event });
     }

@@ -28,6 +28,7 @@ function readConfig(env = process.env) {
   const swqos = new URL(senderUrl).searchParams.get('swqos_only') === 'true';
   const c = {
     dryRun, apiKey,
+    paperPrebuyFilter: bool('PAPER_PREBUY_FILTER', true),
     rpcUrl: endpoint(env.HELIUS_RPC_URL || `https://mainnet.helius-rpc.com/?api-key=${encodeURIComponent(apiKey)}`, ['https:']),
     wsUrl: endpoint(env.HELIUS_WS_URL || `wss://mainnet.helius-rpc.com/?api-key=${encodeURIComponent(apiKey)}`, ['wss:']),
     senderUrl,

@@ -292,3 +292,15 @@ session新增stateQuoteSchedulingVersion=2、selectionVersion=3；exitResearchVe
 2. shadow_health.stateQuotes.schedulingVersion=2；请求滚动一分钟不超过配置上限。已有到期恢复时查看urgent、deadlineOverride和实际quoteRequestAt；无到期样本时计数为0是正常情况。
 3. quality.json新增过滤分组与补报价诊断；如有RPC失败，检查category/code而不是把全部失败认定为超时。
 4. 对比未知率时按新进程窗口、同来源和同规则统计，并同时检查成功补回的亏损。部署验证不能仅凭出现一次成功报价就认定采集完整。
+
+### 模拟买入直接过滤（PAPER_PREBUY_FILTER=true）
+
+在上述研究基础上，纸面订单现在默认启用三项过滤：前15秒买入金额占比<20%、前60秒价格变化<-20%、砸单≥40 SOL。任一已知条件命中就跳过，不占模拟持仓、每分钟准备名额或同币冷却。等于20%买盘、恰好下跌20%不触发；恰好40 SOL触发。
+
+所有候选仍进入原后台观察，保留反事实结果以检查误过滤；不会为被拦截候选建立纸面仓位。历史不足或无有效历史成交时，相应特征明确记unknown，不视为危险命中；其他已知危险条件仍可拒绝。因而纸面执行是“拒绝已知危险”，比要求所有条件都已知且通过的prebuyCombined研究组更宽松，二者收益不能直接当成同一口径。
+
+复用后台同一份砸单前快照，不增加API请求和主线程历史计算。纸面模式最多等待后台250ms；判断不可用、线程故障或超时跳过本次，记prebuy_filter_unavailable，不能伪装成特征安全。返回后重新核对信号时效和持仓/预算限制。砸单≥40 SOL可立即拦截。实盘模式不等待这个纸面过滤器，原实盘路径不变。
+
+日志paper_prebuy_filter及shadow decision包含version=1、scope=paper_only、selectionId、status、rejected、unknown、waitMs和跳过reason；归档自动收录。纸面收益比较要注意新增后台等待和信号过期带来的样本差异，不能把所有差额归因于过滤本身。
+
+现有.env未设置新字段时默认开启；设PAPER_PREBUY_FILTER=false可恢复原纸面入场。启用需要SHADOW_ENABLED=true和正常后台线程。重启后核对starting.strategyConfig.paperPrebuyFilter=true及DRY_RUN=true，再检查至少一条paper_prebuy_filter；已知危险候选应有prebuy_risk_filter跳过记录，后台sample仍保留。模型无需重装，退出规则与每笔1 SOL配置保持原样。

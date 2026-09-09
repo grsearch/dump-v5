@@ -108,6 +108,7 @@ class Tracker {
     for (const id of [...(this.byPool.get(s.pool) || [])]) {
       const sample = this.active.get(id); if (sample) this.observe(sample, s, at);
     }
+    let candidateSelection = null;
     if (candidate) {
       const id = `${this.runId}:${key}`, snapshot = this.features.snapshot(s, at);
       const sample = { id, key, at, source: { signature: s.signature, pool: s.pool, mint: s.mint, slot: s.slot },
@@ -117,6 +118,7 @@ class Tracker {
       this.samples++;
       sample.objectivePredictions = { drawdown60: this.drawdownModel.predict(snapshot, at), loss25: this.riskModel.predict(snapshot, at), netReturn: this.returnModel.predict(snapshot, at) };
       sample.selection = selection(sample.experiments, sample.objectivePredictions, fresh, sample.prediction, snapshot);
+      candidateSelection = sample.selection;
       this.emit({ type: 'sample', id, key, at, source: sample.source, sequence: this.sequence,
         features: snapshot, prediction: sample.prediction, objectivePredictions: sample.objectivePredictions, experiments: sample.experiments,
         selection: sample.selection, runStartedAt: this.runStartedAt, observationVersion: 'selection-v3',
@@ -131,6 +133,7 @@ class Tracker {
       }
     }
     this.features.add(s, at, this.sequence);
+    return candidateSelection;
   }
   label(sample, target, fields, at) {
     this.outcomes++; if (fields.status === 'censored') this.censored++;

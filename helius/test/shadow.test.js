@@ -193,7 +193,7 @@ test('dataset loader excludes censored, truncated and duplicate sample records',
 test('engine records a candidate even when wallet is busy, and never calls model to gate orders', async () => {
   const calls = [], shadow = { observe: (...args) => calls.push(['observe', ...args]), decision: (...args) => calls.push(['decision', ...args]), predict() { throw new Error('must not be called'); } };
   const store = { data: { positions: {}, cleanup: {}, cooldown: {}, pending: {}, seen: {}, streamDays: {} }, save() {}, log() {} };
-  const engine = new Engine(base, store, {}, { connected: true, budgetExceeded: () => false }, shadow);
+  const engine = new Engine({ ...base, paperPrebuyFilter: false }, store, {}, { connected: true, budgetExceeded: () => false }, shadow);
   engine.busy = true; engine.onTransaction(fixture({ virtual: 100000000000n }));
   assert.equal(calls[0][0], 'observe'); assert.equal(calls[0][2], true);
   assert.equal(calls[1][2], 'skipped'); assert.equal(calls[1][3].reason, 'wallet_busy');
@@ -205,7 +205,7 @@ test('cooldown, position cap and candidate cap do not hide samples from the side
   for (const reason of ['cooldown', 'position_limit', 'candidate_limit']) {
     const tx = fixture({ virtual: 100000000000n }), events = [];
     const store = { data: { positions: {}, cleanup: {}, cooldown: {}, pending: {}, seen: {}, streamDays: {} }, save() {}, log() {} };
-    const e = new Engine(base, store, {}, { connected: true, budgetExceeded: () => false }, {
+    const e = new Engine({ ...base, paperPrebuyFilter: false }, store, {}, { connected: true, budgetExceeded: () => false }, {
       observe: (...args) => events.push(['sample', ...args]), decision: (_, status, extra) => events.push([status, extra]),
     });
     if (reason === 'cooldown') store.data.cooldown[tx.mint] = Date.now() + 30000;
@@ -240,6 +240,22 @@ test('real worker writes samples asynchronously and marks shutdown observations 
   const rows = fs.readFileSync(path.join(dir, files[0]), 'utf8').trim().split('\n').map(JSON.parse);
   assert.ok(rows.some(r => r.type === 'sample'));
   assert.equal(rows.filter(r => r.type === 'outcome').length, 3);
+});
+
+test('paper filter client matches responses, times out and ignores late replies', async () => {
+  const fake = new EventEmitter(); fake.unref = () => {}; const batches = [];
+  fake.postMessage = msg => { if (msg.type === 'batch') batches.push(msg); else fake.emit('exit', 0); };
+  fake.terminate = async () => fake.emit('exit', 0);
+  const client = new ShadowClient({ ...base, dryRun: true, paperPrebuyFilter: true }, { workerFactory: () => fake });
+  const first = client.observe(swap(Date.now()), true, true); client.pump();
+  const id = batches[0].events[0].filterId;
+  fake.emit('message', { type: 'paper_filter', filterId: id, selection: { arm: { status: 'reject' } } });
+  assert.equal((await first).arm.status, 'reject'); assert.equal(client.filters.size, 0);
+  const second = client.observe(swap(Date.now()), true, true);
+  assert.equal(await second, null); assert.equal(client.filters.size, 0);
+  fake.emit('message', { type: 'paper_filter', filterId: id + 1, selection: { arm: { status: 'pass' } } });
+  while (client.queue.length || client.inFlight) fake.emit('message', { type: 'ack' });
+  await client.close();
 });
 
 test('candidate experiments use prior history and loss cooldown never silently passes after a gap', () => {
