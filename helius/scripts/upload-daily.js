@@ -67,12 +67,16 @@ async function run({ env = process.env, now = Date.now(), localOnly = false, cli
     return { status: uploaded.length ? 'uploaded' : 'up_to_date', uploaded };
   } finally { fs.closeSync(lockFd); fs.unlinkSync(lock); }
 }
+function failureMessage(error) {
+  if (error?.code === 'INSPECTION_SIZE_LIMIT') return 'Daily COS export failed before upload: uncompressed archive exceeds 4 GiB inspection limit. Pending window retained for retry.';
+  return 'Daily COS export failed. Check credentials, permissions, network, disk and local archive integrity. Pending window retained for retry; secret details omitted.';
+}
 if (require.main === module) {
   const args = process.argv.slice(2);
   if (args.some(a => a !== '--local-only')) { console.error('Usage: node scripts/upload-daily.js [--local-only]'); process.exitCode = 1; }
-  else run({ localOnly: args.includes('--local-only') }).then(r => console.log(JSON.stringify(r))).catch(() => {
+  else run({ localOnly: args.includes('--local-only') }).then(r => console.log(JSON.stringify(r))).catch(error => {
     // SDK errors may contain credentials, signed URLs or headers. Never print them.
-    console.error('Daily COS export failed. Check credentials, permissions, network, disk and local archive integrity. Pending window retained for retry; secret details omitted.'); process.exitCode = 1;
+    console.error(failureMessage(error)); process.exitCode = 1;
   });
 }
-module.exports = { run, reportConfig };
+module.exports = { run, reportConfig, failureMessage };

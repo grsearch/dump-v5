@@ -6,6 +6,13 @@ const readline = require('node:readline');
 const { digest } = require('../src/reporting/archive');
 const { FEATURE_NAMES } = require('../src/shadow/features');
 const { chronologicalSplit } = require('../src/shadow/training');
+const MAX_INSPECTION_BYTES = 4 * 1024 * 1024 * 1024;
+function checkInspectionBytes(bytes) {
+  if (bytes > MAX_INSPECTION_BYTES) {
+    const error = new Error('Inspection limit: 4 GiB uncompressed');
+    error.code = 'INSPECTION_SIZE_LIMIT'; throw error;
+  }
+}
 async function inspect(directory) {
   const file = path.join(directory, 'analysis.jsonl.gz'), summary = JSON.parse(fs.readFileSync(path.join(directory, 'summary.json'), 'utf8'));
   if (await digest(file) !== summary.sha256 || fs.statSync(file).size !== summary.bytes) throw new Error('Archive checksum/size mismatch');
@@ -21,7 +28,7 @@ async function inspect(directory) {
   const inc = (obj, key) => { obj[key] = (obj[key] || 0) + 1; };
   const input = fs.createReadStream(file), unzip = zlib.createGunzip();
   input.on('error', e => unzip.destroy(e)); input.pipe(unzip);
-  unzip.on('data', chunk => { bytes += chunk.length; if (bytes > 1024 * 1024 * 1024) unzip.destroy(new Error('Inspection limit: 1 GiB uncompressed')); });
+  unzip.on('data', chunk => { bytes += chunk.length; try { checkInspectionBytes(bytes); } catch (e) { unzip.destroy(e); } });
   try {
     for await (const line of readline.createInterface({ input: unzip, crlfDelay: Infinity })) {
       const row = JSON.parse(line), r = row.record; if (!r || !row.dataset) throw new Error('Invalid archive row');
@@ -207,4 +214,4 @@ async function inspect(directory) {
     note: 'Training minimum is not validation of predictive performance. Snapshots alone are not training samples.' };
 }
 if (require.main === module) inspect(path.resolve(process.argv[2] || '.')).then(r => console.log(JSON.stringify(r, null, 2))).catch(e => { console.error(e.message); process.exitCode = 1; });
-module.exports = { inspect };
+module.exports = { inspect, MAX_INSPECTION_BYTES, checkInspectionBytes };

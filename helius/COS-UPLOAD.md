@@ -118,3 +118,8 @@ node helius/scripts/export-recent.js --hours 1
 新版归档包含 execution_comparison、pump_migrated 和 sample.age，quality.json 增加候选规则对照及迁移 AGE分组；详见 [观察与年龄说明](OBSERVATION.md)。
 
 每次新版导出同时生成 execution-audit.json，用于逐笔核对 paper/proxy 差额，旧数据缺少中间值会明确标记，不能补造。AGE 采集状态见 quality.json.audit.migrationPipeline。
+# 大归档检查上限修复（2026-09-10）
+
+本地质检解压检查上限由1 GiB提高到4 GiB，超过上限会明确报告`INSPECTION_SIZE_LIMIT`对应的容量错误；未知SDK异常仍不打印可能包含密钥的原文。压缩包大小与解压大小不同。检查器流式读取，但样本、结果和审计索引仍占内存，原样本数量保护继续保留。
+
+若当天已生成analysis.jsonl.gz但在检查阶段失败，更新安装脚本文件后重新启动原上传服务即可复用待上传归档。不要删除upload-state.json、修改游标或重新覆盖已有归档；成功校验并上传四个文件后，程序才推进窗口。定时重试策略不变。部署后核对uploaded.json及服务成功日志，不能以服务正在运行作为上传完成依据。
