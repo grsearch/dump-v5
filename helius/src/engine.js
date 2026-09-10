@@ -22,15 +22,19 @@ class Engine {
   }
   shadowEvent(method, ...args) { try { return this.shadow?.[method](...args); } catch (_) { /* Paper filter handles unavailable results; errors never escape the sidecar. */ } }
   onTransaction(result) {
-    if (this.stopped || !result.signature || this.seen.has(result.signature)) return;
+    if (this.stopped || !result.signature || this.seen.has(result.signature)) {
+      result.traffic = { category: this.stopped ? 'engine_stopped' : !result.signature ? 'missing_signature' : 'duplicate' }; return;
+    }
     this.seen.set(result.signature, Date.now()); this.ticks++;
     if (this.seen.size > 20000) this.seen.delete(this.seen.keys().next().value);
+    let migrationMatched = false;
     for (const swap of parseSwaps(result, event => this.shadowEvent('poolCreated', event), d => {
+      if (d.stage === 'migration_matched' && d.count > 0) migrationMatched = true;
       this.migrationDiagnostics[d.stage] = (this.migrationDiagnostics[d.stage] || 0) + d.count;
       if (d.signature && this.migrationDiagnosticSamples < 20) {
         this.migrationDiagnosticSamples++; this.store.log('migration_diagnostic', d);
       }
-    })) {
+    }, info => { result.traffic = migrationMatched ? { ...info, category: 'verified_migration' } : info; })) {
       this.swaps++;
       const filter = this.shadowEvent('observe', swap, matchesBaseSignal(swap, this.c), isSignal(swap, this.c));
       const previous = this.lastSlots.get(swap.pool);

@@ -49,3 +49,19 @@ npm start
 新增30%/50%固定止盈（保留或取消固定止损）独立对照，以及有预算的Helius账户状态补报价。仅用于已入场研究持仓；连续标签与间断估价分开归档，不改变订单规则或已安装模型。默认最多10次补查询/分钟，详见 [观察与训练说明](helius/OBSERVATION.md)。
 
 新增默认关闭的小额实盘校准模式：0.05 SOL、持仓上限可配1–20仓（默认20）、不限制总买入尝试和累计亏损；统计跨重启保留，强制六项过滤，并行同金额及1 SOL参考shadow。代码更新不会自动切实盘，启用与核对见[校准说明](helius/OBSERVATION.md)。
+
+### Helius 流量归因（streamTrafficVersion=1）
+
+每 60 秒产生一条 `stream_traffic`，正常停止时补写不足一分钟的部分；记录自动进入现有 COS `analysis.jsonl.gz`。仅复用现有交易解析和接收字节计数，无新增订阅或 RPC，不保存原始报文，不改变交易过滤或止损。
+
+分类为 parsed_buy / parsed_sell / parsed_mixed（有效解析）、unparsed_swap（识别到买卖指令但未通过解析校验）、verified_migration（迁移验证通过，优先于买卖分类）、other_transaction（未识别到支持的买卖指令，不能据此断言没有 swap），以及重复、过期 slot、控制消息、错误、预算丢弃等。每条消息只计入一个分类，分类 byteCount 总和等于总 byteCount。这些是收到的应用消息字节，不是 Helius 账户账单，也不包含 RPC 请求费用。
+
+池子统计取已识别买卖指令的池地址；多池交易平均分摊整条消息字节，属于估算。每分钟最多跟踪 2048 个池，输出前 20 个，其余分别进入 otherPoolByteCount / overflowPoolByteCount；没有池地址的进入 unattributedByteCount。候选池统计不表示其买卖已通过安全校验，更不能仅凭流量认定刷量。池名单每分钟清空，内存和日志量有界。
+
+部署后检查 starting.strategyConfig.streamTrafficVersion=1，运行一分钟后应看到 stream_traffic；导出 15–30 分钟窗口即可开始定位流量来源：
+
+```bash
+node helius/scripts/stream-traffic-report.js /path/to/analysis.jsonl.gz > traffic-summary.json
+```
+
+汇总输出分类占比与池榜。池榜仅累加每分钟前 20 名，为下界估算，不是精确全窗口排名；每分钟统计可能跨导出边界，异常退出最多丢失最后一分钟的归因。旧归档没有原始报文，无法补算流量。若 intervals=0，说明文件内尚无新版统计，应先核对部署和导出窗口。

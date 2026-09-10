@@ -7,12 +7,17 @@ class Stream extends EventEmitter {
   constructor(config, store) {
     super(); this.config = config; this.store = store; this.running = false;
     this.connected = false; this.lastMessage = 0; this.attempt = 0; this.latestSlot = 0;
+    this.traffic = new (require('./stream-traffic'))((type, data) => store.log(type, data));
   }
   budgetExceeded() {
     const used = this.store.data.streamDays[new Date().toISOString().slice(0, 10)] || 0;
     return this.config.maxBytesPerDay > 0 && used >= this.config.maxBytesPerDay;
   }
-  start() { this.running = true; this.connect(); }
+  start() {
+    this.running = true;
+    this.trafficTimer = setInterval(() => this.traffic.flush(), 60000);
+    this.connect();
+  }
   connect() {
     if (!this.running) return;
     if (this.budgetExceeded()) {
@@ -41,9 +46,11 @@ class Stream extends EventEmitter {
       const day = new Date().toISOString().slice(0, 10);
       this.store.data.streamDays[day] = (this.store.data.streamDays[day] || 0) + raw.length;
       if (this.budgetExceeded()) {
+        this.traffic.record(raw.length, { category: 'budget_discarded' });
         this.connected = false; this.emit('connection', false);
         this.store.log('stream_budget_reached', { day }); this.store.save(); ws.close(); return;
       }
+      let traffic = { category: 'control' };
       try {
         const msg = JSON.parse(raw.toString());
         if (msg.error) {
@@ -58,9 +65,14 @@ class Stream extends EventEmitter {
         const result = msg.params.result;
         this.latestSlot = Math.max(this.latestSlot, result.slot || 0);
         // Bound delayed/out-of-order data before parsing, no replay on reconnect.
-        if (result.slot < this.latestSlot - 6) return;
-        this.emit('transaction', { ...result, receivedAt });
-      } catch (err) { this.store.log('stream_parse_error', { error: err.message }); }
+        if (result.slot < this.latestSlot - 6) { traffic = { category: 'stale_slot' }; return; }
+        const incoming = { ...result, receivedAt };
+        this.emit('transaction', incoming);
+        traffic = incoming.traffic || { category: 'unclassified_transaction' };
+      } catch (err) {
+        traffic = { category: 'parse_or_handler_error' };
+        this.store.log('stream_parse_error', { error: err.message });
+      } finally { this.traffic.record(raw.length, traffic); }
     });
     ws.on('error', () => this.store.log('stream_network_error'));
     ws.on('close', () => {
@@ -72,6 +84,6 @@ class Stream extends EventEmitter {
       }
     });
   }
-  stop() { this.running = false; this.connected = false; this.emit('connection', false); clearTimeout(this.retry); clearTimeout(this.ackTimeout); clearInterval(this.heartbeat); this.ws?.terminate(); }
+  stop() { this.running = false; this.connected = false; this.emit('connection', false); clearTimeout(this.retry); clearTimeout(this.ackTimeout); clearInterval(this.heartbeat); clearInterval(this.trafficTimer); this.traffic.flush(); this.ws?.terminate(); }
 }
 module.exports = Stream;

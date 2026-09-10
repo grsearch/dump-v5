@@ -59,7 +59,7 @@ function decodeEvent(data, schema = layout) {
   return out.pool && out.user && (out.user_quote_amount_out !== undefined || out.user_quote_amount_in !== undefined) ? out : null;
 }
 
-function parseSwaps(result, onPoolCreated, onMigrationDiagnostic) {
+function parseSwaps(result, onPoolCreated, onMigrationDiagnostic, onTraffic) {
   const tx = normalize(result);
   if (!tx) return [];
   if (onPoolCreated) migrations(tx, decodeEvent, onPoolCreated, onMigrationDiagnostic);
@@ -107,6 +107,10 @@ function parseSwaps(result, onPoolCreated, onMigrationDiagnostic) {
       postBase: postBase.toString(), postQuote: postQuote.toString(),
     });
   }
+  onTraffic?.({ category: resultSwaps.length
+    ? (new Set(resultSwaps.map(s => s.side)).size > 1 ? 'parsed_mixed' : `parsed_${resultSwaps[0].side}`)
+    : swaps.length ? 'unparsed_swap' : 'other_transaction',
+    pools: swaps.map(s => s.ix.accounts[0]).filter(Boolean) });
   return resultSwaps;
 }
 module.exports = { normalize, decodeEvent, parseSwaps, CPI_TAG };
