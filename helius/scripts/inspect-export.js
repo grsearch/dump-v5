@@ -20,6 +20,7 @@ async function inspect(directory) {
   const audit = { windowCounts: {}, coverageGapReasons: {}, featureReasons: {}, policies: {}, paper: { closed: 0, wins: 0, losses: 0, flat: 0, missingPnl: 0, grossPnlSol: 0 }, shadowHealth: { observations: 0, maxQueueDepth: 0, maxDroppedPerSession: 0, maxHistoryEvictionsPerSession: 0 } };
   const recoveryResults = new Map();
   const researchRecovery = new Map();
+  const entryComparisons = new Map();
   audit.stateQuotes = { quoted: 0, unavailable: 0, reasons: {}, discardReasons: {}, extensionRejections: {}, rpcDiagnosticCategories: {}, rpcCodes: {}, urgentPools: 0, deadlineOverrides: 0, slotCatchupScheduledPools: 0 };
   audit.modelPredictions = { rebound: {}, drawdown: {} };
   const closes = new Set(), delays = [];
@@ -70,6 +71,11 @@ async function inspect(directory) {
         }
       }
       if (row.dataset !== 'shadow') continue;
+      if (inside && r.type === 'entry_comparison') {
+        const key = `${r.id}:${r.variant}`, previous = entryComparisons.get(key);
+        if (!previous || r.at >= previous.at) entryComparisons.set(key, r);
+        if (entryComparisons.size > 300000) throw new Error('Entry comparison inspection limit exceeded');
+      }
       if (inside && r.type === 'state_quote') {
         for (const d of r.accountDiagnostics || []) if (d.status === 'rejected') {
           if (d.blockedExtensions?.length) for (const e of d.blockedExtensions) inc(audit.stateQuotes.extensionRejections, `${d.role}:${e.type}:${e.name}`);
@@ -207,6 +213,7 @@ async function inspect(directory) {
   }
   audit.noStopRecovery.groups = [...recoveryGroups.values()];
   audit.researchRecovery = require('../src/reporting/recovery-audit').recoveryAudit(researchRecovery, outcomes);
+  audit.entryComparisons = require('../src/reporting/entry-audit').entryAudit(entryComparisons);
   if (audit.modelPredictions.rebound.no_model || audit.modelPredictions.drawdown.no_model) audit.warnings.push('Observation models are not loaded for some candidates; install both model files and verify after restart.');
   audit.selectionValidation = require('../src/reporting/selection-validation').selectionValidation(samples, outcomes, summary.window, exitComparisons);
   return { integrity: 'verified', lines, window: summary.window, snapshotAt: summary.snapshotAt, windowRecords: summary.stats.windowRecords,

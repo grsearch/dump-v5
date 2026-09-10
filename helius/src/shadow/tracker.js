@@ -8,6 +8,7 @@ const { Age } = require('./age');
 const { ExitComparisons } = require('./exit-comparisons');
 const { Recovery } = require('./recovery');
 const { selection } = require('./selection');
+const { EntryComparisons, RULES: ENTRY_RULES, ARMS: ENTRY_ARMS } = require('./entry-comparisons');
 
 function assumptions(c) {
   return { version: 1, sizeSol: c.sizeSol, takeProfit: c.takeProfit, stopLoss: c.stopLoss, trailArm: c.trailArm,
@@ -56,11 +57,14 @@ class Tracker {
     this.ages = new Age();
     this.active = new Map(); this.byPool = new Map(); this.lastOrder = new Map(); this.seen = new Map();
     this.sequence = 0; this.connected = false; this.lastGlobalAt = 0; this.samples = 0; this.outcomes = 0; this.censored = 0;
+    this.entryComparisons = c.entryComparisons ? new EntryComparisons(c, r => this.emit(r), { buyQuote, liquidationDetails }) : null;
     this.write({ type: 'session', schema: 1, runId, at: this.now(), policy: this.policy, policyId: this.policyId,
       drawdownModelStatus: this.drawdownModel.status, modelStatus: this.model.status, riskModelStatus: this.riskModel.status, returnModelStatus: this.returnModel.status,
       noStopRecoveryVersion: this.recovery ? 1 : null, exitComparisonVersion: this.exitComparisons ? 1 : null,
       exitResearchVersion: 3, stateQuoteVersion: this.stateRecovery ? 1 : null, stateQuoteSchedulingVersion: this.stateRecovery ? 3 : null, selectionVersion: 4,
       exitVariants: this.exitComparisons ? require('./exit-comparisons').ARMS : [],
+      entryResearchVersion: this.entryComparisons ? 1 : null, entryRules: this.entryComparisons ? ENTRY_RULES : null,
+      entryVariants: this.entryComparisons ? ENTRY_ARMS : [], entryResearchRequiresKnownPrebuyPass: true,
       source: 'processed_pumpswap_swaps', observationalOnly: true });
   }
   emit(record) { this.write({ schema: 1, runId: this.runId, policyId: this.policyId, ...record }); }
@@ -69,6 +73,7 @@ class Tracker {
     else { this.connected = true; this.lastGlobalAt = at; this.emit({ type: 'connection', connected, at }); }
   }
   gap(reason, at = this.now()) {
+    this.entryComparisons?.gap(reason, at);
     for (const sample of [...this.active.values()]) this.finishIncomplete(sample, reason, at);
     if (['process_shutdown', 'clock_moved_backwards'].includes(reason)) {
       this.recovery?.close(reason, at); this.exitRecovery?.close(reason, at); this.stateRecovery?.close(reason, at);
@@ -86,6 +91,7 @@ class Tracker {
     }
     this.lastGlobalAt = at;
     if (!Number.isFinite(s.eventTime) || at - s.eventTime > this.c.maxSourceLagMs || s.eventTime > at + 2000) {
+      this.entryComparisons?.gap('stale_source_observation', at, s.pool);
       for (const id of [...(this.byPool.get(s.pool) || [])]) this.finishIncomplete(this.active.get(id), 'stale_source_observation', at);
       this.features.invalidate(s.pool);
       if (candidate) this.emit({ type: 'excluded_candidate', key, at, reason: 'stale_source_observation' });
@@ -93,17 +99,20 @@ class Tracker {
     }
     const previous = this.lastOrder.get(s.pool);
     if (previous && s.slot < previous.slot) {
+      this.entryComparisons?.gap('out_of_order_slot', at, s.pool);
       if (candidate) this.emit({ type: 'excluded_candidate', key, at, reason: 'out_of_order_slot' });
       return;
     }
     this.lastOrder.delete(s.pool); this.lastOrder.set(s.pool, { slot: s.slot, at });
     if (this.lastOrder.size > this.c.maxPools) this.lastOrder.delete(this.lastOrder.keys().next().value);
     // One pool observation per swap, shared by overlapping samples; no additional RPC.
-    if (candidate || this.byPool.has(s.pool) || this.recovery?.byPool.has(s.pool) || this.exitRecovery?.byPool.has(s.pool)) this.emit({ type: 'pool_observation', key, at, pool: s.pool, mint: s.mint,
+    if (candidate || this.byPool.has(s.pool) || this.recovery?.byPool.has(s.pool) || this.exitRecovery?.byPool.has(s.pool) || this.entryComparisons?.byPool.has(s.pool)) this.emit({ type: 'pool_observation', key, at, pool: s.pool, mint: s.mint,
       signature: s.signature, slot: s.slot, side: s.side, eventTime: s.eventTime, price: s.price,
+      ...(s.side === 'buy' && this.entryComparisons?.needsBuyer(s.pool, at) ? { user: s.user ?? null, buyerIdentityVersion: 1 } : {}),
       postBase: s.postBase, postQuote: s.postQuote, virtual: s.virtual, quoteSol: s.quoteSol, sellSol: s.sellSol });
     this.recovery?.observe(s, at);
     this.exitRecovery?.observe(s, at);
+    this.entryComparisons?.observe(s, at);
     // Older candidates see this event as a future observation; the new candidate snapshot excludes it.
     for (const id of [...(this.byPool.get(s.pool) || [])]) {
       const sample = this.active.get(id); if (sample) this.observe(sample, s, at);
@@ -119,6 +128,7 @@ class Tracker {
       sample.objectivePredictions = { drawdown60: this.drawdownModel.predict(snapshot, at), loss25: this.riskModel.predict(snapshot, at), netReturn: this.returnModel.predict(snapshot, at) };
       sample.selection = selection(sample.experiments, sample.objectivePredictions, fresh, sample.prediction, snapshot);
       candidateSelection = sample.selection;
+      this.entryComparisons?.add(sample, s, fresh && this.connected && sample.selection.arms.prebuyCombined.status === 'pass', at);
       this.emit({ type: 'sample', id, key, at, source: sample.source, sequence: this.sequence,
         features: snapshot, prediction: sample.prediction, objectivePredictions: sample.objectivePredictions, experiments: sample.experiments,
         selection: sample.selection, runStartedAt: this.runStartedAt, observationVersion: 'selection-v4',
@@ -207,6 +217,7 @@ class Tracker {
     if (sample.strategyDone && Object.values(sample.horizons).every(h => h.done) && (!this.exitComparisons || this.exitComparisons.done(sample))) this.remove(sample);
   }
   tick(at) {
+    this.entryComparisons?.tick(at);
     this.recovery?.tick(at);
     this.exitRecovery?.tick(at); this.stateRecovery?.tick(at);
     for (const sample of [...this.active.values()]) {
@@ -246,6 +257,7 @@ class Tracker {
     this.emit({ type: 'decision', key, status, at, ...extra });
   }
   stats() { return { samples: this.samples, outcomes: this.outcomes, censored: this.censored, active: this.active.size,
+    entryComparisons: this.entryComparisons?.stats() ?? null,
     recovery: this.recovery?.stats() ?? null, migrationAge: { ...this.ages.counters, cachedPools: this.ages.pools.size },
     exitRecovery: this.exitRecovery?.stats() ?? null, stateRecovery: this.stateRecovery?.stats() ?? null,
     historyPools: this.features.pools.size, historyEvents: this.features.total, historyEvictions: this.features.evictions, model: this.model.status,

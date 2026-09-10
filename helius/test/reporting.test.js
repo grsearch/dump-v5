@@ -25,6 +25,41 @@ function fakeCOS() {
     uploadFile(p, cb) { calls.push(p.Key); objects.set(p.Key, { bytes: fs.statSync(p.FilePath).size, hash: p.Headers['x-cos-meta-sha256'] }); cb(null, {}); },
     headObject(p, cb) { const o = objects.get(p.Key); cb(null, { headers: { 'content-length': String(o.bytes), 'x-cos-meta-sha256': o.hash, etag: 'fake' } }); } };
 }
+
+test('entry research survives archive and inspection without turning unknown into zero-return trade', async t => {
+  const f = fixture(t), at = f.end - 5000;
+  write(path.join(f.env.SHADOW_DIRECTORY, 'samples-entry.jsonl'), [
+    { type: 'entry_comparison', entryResearchVersion: 1, id: 's', variant: 'immediate', policyId: 'p', at, phase: 'entered', status: 'holding', entryAt: at },
+    { type: 'entry_comparison', entryResearchVersion: 1, id: 's', variant: 'immediate', policyId: 'p', at: at + 500, phase: 'finished', status: 'observed_proxy', entryAt: at, netPnlSol: -.1 },
+    { type: 'entry_comparison', entryResearchVersion: 1, id: 's', variant: 'confirm_two_buyers', policyId: 'p', at: at + 500, phase: 'finished', status: 'censored', reason: 'buyer_identity_unavailable', netPnlSol: null }
+  ]);
+  const a = await buildArchive({ c: f.c, outputDir: f.env.COS_EXPORT_DIRECTORY, end: f.end });
+  const q = await require('../scripts/inspect-export').inspect(path.dirname(a.file));
+  const groups = q.audit.entryComparisons.groups;
+  assert.equal(groups.find(g => g.variant === 'immediate').candidates, 1);
+  assert.equal(groups.find(g => g.variant === 'immediate').netPnlSol, -.1);
+  assert.equal(groups.find(g => g.variant === 'confirm_two_buyers').unknown, 1);
+  assert.equal(groups.find(g => g.variant === 'confirm_two_buyers').observed, 0);
+});
+
+test('archive replay validates source hash, admits only prebuy known pass, and never invents buyer identities', async t => {
+  const f = fixture(t), at = f.end - 10000, p = { ...f.c.shadow, sizeSol: 1, networkFeeSol: 0, feeBps: 0, slippageBps: 0,
+    takeProfit: 20, stopLoss: 25, trailArm: 10, trailDrop: 3, maxHoldMs: 30000 };
+  const swap = (offset, quote, side = 'buy') => ({ type: 'pool_observation', runId: 'r', key: `k${offset}`, at: at + offset,
+    pool: 'pool', mint: 'mint', price: quote / 1e11, postBase: '100000000000', postQuote: String(quote * 1e9), virtual: '0', side });
+  write(path.join(f.env.SHADOW_DIRECTORY, 'samples-entry-replay.jsonl'), [swap(0, 100, 'sell'),
+    { type: 'sample', runId: 'r', id: 's', key: 'k0', at, policy: p, policyId: 'policy', source: { pool: 'pool', mint: 'mint' }, decisionFresh: true,
+      features: { ready: true, values: { buyFraction15: .5, buySol15: 1, sellSol15: 1, trades60: 10, return60Pct: 0, sellSol: 8 } } },
+    swap(100, 100), swap(500, 103), swap(1000, 104), swap(1500, 140), swap(2000, 135), swap(3500, 135)]);
+  const a = await buildArchive({ c: f.c, outputDir: f.env.COS_EXPORT_DIRECTORY, end: f.end });
+  const { replay } = require('../scripts/replay-entry-research');
+  const q = await replay(path.dirname(a.file), path.join(f.dir, 'replayed.json'));
+  assert.equal(q.samples, 1); assert.equal(q.buyerIdentityObservations, 0);
+  assert.equal(q.audit.groups.find(g => g.variant === 'confirm_buy_flow').observed, 1);
+  assert.equal(q.audit.groups.find(g => g.variant === 'confirm_two_buyers').unknown, 1);
+  fs.appendFileSync(a.file, 'x');
+  await assert.rejects(replay(path.dirname(a.file), path.join(f.dir, 'bad.json')), /checksum\/size/);
+});
 test('daily boundary is exactly Beijing 07:00 regardless of host timezone or US DST', () => {
   for (const date of ['2026-03-08', '2026-09-07', '2026-11-01']) {
     const end = Date.parse(`${date}T23:00:00Z`);

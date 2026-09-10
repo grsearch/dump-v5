@@ -31,6 +31,25 @@ function collector(extra = {}) {
 }
 function warm(t) { for (let at = 0; at < 60000; at += 5000) t.onSwap(swap(at), false, false); }
 
+test('independent entry research preserves original labels and records buyer identity only in confirmation window', () => {
+  const enabled = collector({ entryComparisons: true }), disabled = collector({ entryComparisons: false });
+  for (const { tracker } of [enabled, disabled]) {
+    warm(tracker); tracker.onSwap(swap(60000), true, true);
+    tracker.onSwap(swap(60500), false, true);
+    tracker.onSwap(swap(61000, { postQuote: '104000000000', user: 'second-buyer' }), false, true);
+    tracker.onSwap(swap(61500, { postQuote: '105000000000' }), false, true);
+    tracker.onSwap(swap(62000, { postQuote: '135000000000' }), false, true);
+    tracker.onSwap(swap(62500, { postQuote: '130000000000' }), false, true);
+    tracker.gap('process_shutdown', 64000);
+  }
+  assert.deepEqual(enabled.records.filter(r => r.type === 'outcome'), disabled.records.filter(r => r.type === 'outcome'));
+  assert.equal(enabled.records[0].entryResearchVersion, 1);
+  assert.ok(enabled.records.some(r => r.type === 'entry_comparison' && r.phase === 'entered'));
+  assert.equal(enabled.records.find(r => r.type === 'pool_observation' && r.at === 60500).user, 'seller');
+  assert.equal(enabled.records.find(r => r.type === 'pool_observation' && r.at === 61500).user, undefined);
+  assert.equal(enabled.tracker.entryComparisons.active.size, 0);
+});
+
 test('exit research preserves baseline labels and archives missing variant exits', () => {
   const enabled = collector({ exitComparisons: true }), disabled = collector({ exitComparisons: false });
   for (const { tracker } of [enabled, disabled]) {

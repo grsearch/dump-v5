@@ -76,6 +76,7 @@ function readConfig(env = process.env) {
       maxEventsPerPool: num('SHADOW_MAX_EVENTS_PER_POOL', 2000, 10, 10000, true),
       minHistorySwaps: num('SHADOW_MIN_HISTORY_SWAPS', 10, 2, 1000, true),
       entryDelayMs: num('SHADOW_ENTRY_DELAY_MS', 500, 1, 10000, true),
+      entryComparisons: bool('SHADOW_ENTRY_COMPARISONS', true),
       entryDeadlineMs: num('SHADOW_ENTRY_DEADLINE_MS', 2500, 1, 30000, true),
       exitDelayMs: num('SHADOW_EXIT_DELAY_MS', 500, 1, 10000, true),
       maxGapMs: num('SHADOW_MAX_OBSERVATION_GAP_MS', 10000, 1000, 30000, true),
