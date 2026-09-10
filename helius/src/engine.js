@@ -53,7 +53,8 @@ class Engine {
     // Network exceptions can contain the API key URL. Redact both URLs and configured secrets.
     let message = String(err.message).replace(/https?:\/\/\S+/g, '[endpoint]');
     for (const secret of [this.c.apiKey, this.c.privateKey]) if (secret) message = message.split(secret).join('[redacted]');
-    this.store.log('operation_error', { stage, error: message });
+    this.store.log('operation_error', { stage, code: Number.isInteger(err.code) ? err.code : null,
+      contextSlot: Number.isSafeInteger(err.data?.contextSlot) ? err.data.contextSlot : null, error: message });
   }
   pending() { return Object.keys(this.data.pending).length > 0; }
   async buy(swap, filter) {

@@ -46,7 +46,7 @@ class Executor {
   ata(mint, program) {
     return getAssociatedTokenAddressSync(new PublicKey(mint), this.wallet.publicKey, false, new PublicKey(program));
   }
-  async state(swap) {
+  async state(swap, side) {
     const user = this.wallet.publicKey;
     const baseTokenProgram = new PublicKey(swap.tokenProgram);
     if (![TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID].some(p => p.equals(baseTokenProgram))) throw new Error('Unsupported token program');
@@ -56,9 +56,8 @@ class Executor {
     const keys = [poolKey, GLOBAL_CONFIG_PDA, PUMP_AMM_FEE_CONFIG_PDA, baseMint,
       new PublicKey(swap.baseVault), new PublicKey(swap.quoteVault), userBaseTokenAccount, userQuoteTokenAccount];
     // Addresses come from the authenticated swap: one round trip replaces SDK's three sequential reads.
-    const response = await this.rpc.getMultipleAccountsInfoAndContext(keys, {
-      commitment: 'processed', ...(swap.slot ? { minContextSlot: swap.slot } : {}),
-    });
+    const response = await require('./account-read').readAccounts(this.rpc, keys, { ...swap, isEntry: side === 'buy' }, this.c,
+      (type, record) => this.store?.log(type, record));
     const [poolAccountInfo, globalInfo, feeInfo, mintInfo, b, q, userBaseAccountInfo, userQuoteAccountInfo] = response.value;
     if (!poolAccountInfo?.owner.equals(new PublicKey(PUMP)) || !globalInfo || !feeInfo || !mintInfo || !b || !q) throw new Error('Pool/config accounts unavailable');
     const pool = PUMP_AMM_SDK.decodePool(poolAccountInfo);
@@ -80,7 +79,7 @@ class Executor {
   async buildSwap(side, swap, rawAmount) {
     const t0 = performance.now();
     // A stale blockhash refresh need not wait for the independent pool read.
-    const [state] = await Promise.all([this.state(swap),
+    const [state] = await Promise.all([this.state(swap, side),
       !this.blockhash || Date.now() - this.blockhash.at > 25000 ? this.refreshBlockhash() : Promise.resolve()]);
     const stateMs = performance.now() - t0;
     const account = state.userBaseAccountInfo ? unpackAccount(state.userBaseTokenAccount, state.userBaseAccountInfo, state.baseTokenProgram) : null;

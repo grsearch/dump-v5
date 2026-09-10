@@ -2,6 +2,14 @@
 
 ## 小额实盘校准（默认关闭）
 
+### 批量账户读取失败排查
+
+`failed to get info for accounts` 来自 web3.js 的 `getMultipleAccountsInfoAndContext`。该前缀不代表具体根因，后面长账户列表可能遮住真正错误。查看 `execution_account_read_failed` 的 code、requestedSlot、contextSlot、retry，以及同次 `operation_error` 完整原因；不要仅凭前缀认定为节点落后。
+
+仅 code=-32016（节点未达到 minContextSlot）最多增加两次读取，间隔100/200ms。始终保留原minContextSlot，不用旧池状态凑报价；超过700ms重试调度窗口或买入信号期限不再重试。700ms不是网络请求超时，单次请求仍受原10秒超时约束，构建后的信号新鲜度检查仍有效。卖出不套用旧入场信号期限。限流、权限、参数、网络错误不自动重试；最多增加两次Helius账户请求，无新数据源。
+
+更新后用新日志确认服务器具体错误：出现 `execution_account_read_recovered` 表示短暂slot落后已恢复；持续-32016需检查Helius RPC与交易流节点进度，其余错误按完整原因排查。本地测试不能代替服务器成功构建或真实成交验证。Token扩展拒绝仍是另一项执行限制，本次没有放宽。
+
 此模式用于测量实际执行与shadow偏差，不是证明策略已盈利。仅部署代码不会发送实盘订单，默认DRY_RUN=true、LIVE_CALIBRATION=false保持纸面。
 
 启用配置（在实际运行的helius/.env中设置；本次代码更新不会代填钱包或切换模式）：
