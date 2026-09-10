@@ -477,3 +477,10 @@ execution_token_extensions记录version=1、side、sourceSignature、pool、账�
 继续下跌保护以本次触发砸单后的池价为基准，不是买入均价或前60秒起点。等待过滤和构建期间监听同池、同币、非旧slot的后续行情；一旦下跌达到20%即锁定取消，不因随后反弹重新放行。构建返回的现有RPC账户状态也必须有有效池价，并检查同一20%阈值。发送前取消，尚未提交的签名不登记pending、不增加attempts；行情恶化发生在准备阶段时，原准备名额/冷却可能已经使用。既有已提交交易仍按原签名核对，不能撤回或重建。
 
 不增加API请求、不额外等待；20%为本轮防守阈值，不是已证明盈利的最优值。此保护不能发现尚未到达的行情，也不保证防止发送后的暴跌。卖出、25%止损、30分钟退出及此前失败回执修复不受影响。部署保留.env和账本，无新增必填环境变量；启动核对liveEntryGuardVersion=1和liveEntryMaxFurtherDropPct=20。检查calibration_prebuy_filter.reason=prebuy_history_required及live_entry_cancelled；每日execution-audit.executionFunnel分别去重统计历史拒绝和发送前取消。
+# 卖出重试与流量归因部署核对
+
+本版新增 `exitRetryVersion=1`、`streamTrafficVersion=2`。先完成既有测试和部署步骤，保留账本、模型和配置。重启前确认待确认交易；重启后核对新 starting 标记、持仓与 pending 恢复。
+
+卖出 `-32016` 准备失败或链上确认 `6004` 后，查看 `exit_retry_scheduled` 的 kind、delayMs 和 fast；短重试资格 250/500/1000ms，每仓/全局60秒最多3/6次，实际执行受行情或1秒维护循环、执行锁和链上确认影响。其他错误仍10秒退避，未知签名不重新广播替代交易。预算持久化。退出失败后即使回升也保留退出意图；不要把这种重试当作新策略信号。
+
+`stream_traffic.version=2` 含 reasons，原类别计数保留；原因字节均分，原因消息数可能重叠。导出15–30分钟后用 `stream-traffic-report.js` 汇总，关注未采用交易中各原因的字节占比。无新增行情订阅或流量分析RPC；实盘短重试本身可能增加执行RPC。

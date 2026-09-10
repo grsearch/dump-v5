@@ -34,7 +34,7 @@ class Engine {
       if (d.signature && this.migrationDiagnosticSamples < 20) {
         this.migrationDiagnosticSamples++; this.store.log('migration_diagnostic', d);
       }
-    }, info => { result.traffic = migrationMatched ? { ...info, category: 'verified_migration' } : info; })) {
+    }, info => { result.traffic = migrationMatched ? { ...info, category: 'verified_migration', reasons: ['verified_migration'] } : info; })) {
       this.swaps++;
       const filter = this.shadowEvent('observe', swap, matchesBaseSignal(swap, this.c), isSignal(swap, this.c));
       const previous = this.lastSlots.get(swap.pool);
@@ -168,8 +168,21 @@ class Engine {
       await this.executor.submit(pending);
       this.store.log('sell_submitted', { mint: p.mint, signature: pending.signature, reason,
         diagnostic: { ...diagnostic, sendAt, triggerToSendMs: sendAt - diagnostic.firstTriggerAt, senderAckMs: Date.now() - sendAt } });
-    } catch (err) { p.retryAfter = Date.now() + 10000; throw err; }
+    } catch (err) {
+      // A journaled signature may have landed even when submit throws. Reconcile
+      // it first; never build a replacement while its outcome is unknown.
+      if (!Object.values(this.data.pending).some(x => x.mint === p.mint && x.side === 'sell')) {
+        this.scheduleExitRetry(p, reason, err.code === -32016 ? 'account_slot' : 'preparation_error');
+      }
+      throw err;
+    }
     finally { this.busy = false; }
+  }
+  scheduleExitRetry(p, reason, kind) {
+    p.exitRetryReason = reason;
+    const retry = require('./exit-retry').planExitRetry(p, this.data, kind);
+    this.store.save();
+    this.store.log('exit_retry_scheduled', { mint: p.mint, pool: p.pool, reason, ...retry });
   }
   async reconcile() {
     if (this.c.dryRun || this.reconciling || this.busy || !this.pending()) return;
@@ -218,7 +231,11 @@ class Engine {
   failPending(p, reason, chainError) {
     if (reason === 'expired_unlanded') this.calibration.unlanded(p);
     delete this.data.pending[p.signature];
-    if (this.data.positions[p.mint]) this.data.positions[p.mint].retryAfter = Date.now() + 10000;
+    if (p.side === 'sell' && this.data.positions[p.mint]) {
+      const kind = require('./exit-retry').isSlippageFailure(chainError) ? 'confirmed_slippage'
+        : reason === 'expired_unlanded' ? 'expired_unlanded' : 'confirmed_other_failure';
+      this.scheduleExitRetry(this.data.positions[p.mint], p.reason, kind);
+    } else if (this.data.positions[p.mint]) this.data.positions[p.mint].retryAfter = Date.now() + 10000;
     if (p.side === 'close' && this.data.cleanup[p.mint]) this.data.cleanup[p.mint].dueAt = Date.now() + this.c.cleanupIntervalMs;
     this.store.save(); this.store.log('transaction_failed', { signature: p.signature, side: p.side, reason, chainError });
     if (p.swap) this.shadowEvent('decision', p.swap, 'transaction_failed', { side: p.side, signature: p.signature, reason });
@@ -326,8 +343,8 @@ class Engine {
       // Timeout exits must work even if market streaming disconnects or hits its budget.
       for (const p of Object.values(this.data.positions)) {
         const fresh = Date.now() - p.lastPriceAt <= Math.max(5000, this.c.positionPollMs * 2);
-        const reason = fresh ? exitReason(p, p.lastPrice, this.c)
-          : Date.now() - p.openedAt >= this.c.maxHoldMs ? 'max_hold' : null;
+        const reason = p.exitRetryReason || (fresh ? exitReason(p, p.lastPrice, this.c)
+          : Date.now() - p.openedAt >= this.c.maxHoldMs ? 'max_hold' : null);
         if (reason) await this.sell(p, reason);
       }
       if (Date.now() - this.lastPoll >= this.c.positionPollMs) { this.lastPoll = Date.now(); await this.pollPositions(); }

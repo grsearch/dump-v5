@@ -76,25 +76,28 @@ function parseSwaps(result, onPoolCreated, onMigrationDiagnostic, onTraffic) {
     return spec ? { ix, side: spec.name === 'sell' ? 'sell' : 'buy' } : null;
   }).filter(Boolean);
   const resultSwaps = [];
+  const rejected = new Set();
+  const reject = reason => { rejected.add(reason); };
   for (const { ix, side } of swaps) {
     const [pool, user, , mint, quote, , , baseVault, quoteVault] = ix.accounts;
-    if (quote !== WSOL || mint === WSOL || !pool || !baseVault || !quoteVault) continue;
+    if (quote !== WSOL || mint === WSOL) { reject('unsupported_pair'); continue; }
+    if (!pool || !baseVault || !quoteVault) { reject('missing_instruction_accounts'); continue; }
     if (tx.instructions.some(other => other.program === PUMP && other.accounts[0] === pool && other !== ix
-      && !other.data.subarray(0, 8).equals(CPI_TAG))) continue;
+      && !other.data.subarray(0, 8).equals(CPI_TAG))) { reject('multiple_pool_instructions'); continue; }
     // Transaction-level balances cannot attribute a single dump in multi-hop repeats.
-    if (swaps.filter(s => s.ix.accounts[0] === pool).length !== 1) continue;
+    if (swaps.filter(s => s.ix.accounts[0] === pool).length !== 1) { reject('repeated_pool_swaps'); continue; }
     const matches = events.filter(e => e.pool === pool && e.user === user && e.name === (side === 'sell' ? 'SellEvent' : 'BuyEvent'));
-    if (matches.length !== 1) continue;
+    if (matches.length !== 1) { reject(matches.length ? 'ambiguous_swap_event' : 'missing_authenticated_swap_event'); continue; }
     const event = matches[0];
     const balance = (list, vault, expectedMint) => list?.find(x => tx.keys[x.accountIndex] === vault && x.mint === expectedMint)?.uiTokenAmount;
     const b0 = balance(tx.meta.preTokenBalances, baseVault, mint), b1 = balance(tx.meta.postTokenBalances, baseVault, mint);
     const q0 = balance(tx.meta.preTokenBalances, quoteVault, WSOL), q1 = balance(tx.meta.postTokenBalances, quoteVault, WSOL);
-    if (![b0, b1, q0, q1].every(x => x?.amount !== undefined)) continue;
+    if (![b0, b1, q0, q1].every(x => x?.amount !== undefined)) { reject('missing_vault_balances'); continue; }
     const preBase = BigInt(b0.amount), postBase = BigInt(b1.amount), preQuote = BigInt(q0.amount), postQuote = BigInt(q1.amount);
     const virtual = event.virtual_quote_reserves || 0n;
-    if (preBase <= 0n || postBase <= 0n || preQuote + virtual <= 0n || postQuote + virtual <= 0n) continue;
-    if (side === 'sell' && !(postBase > preBase && postQuote < preQuote)) continue;
-    if (side === 'buy' && !(postBase < preBase && postQuote > preQuote)) continue;
+    if (preBase <= 0n || postBase <= 0n || preQuote + virtual <= 0n || postQuote + virtual <= 0n) { reject('nonpositive_reserves'); continue; }
+    if (side === 'sell' && !(postBase > preBase && postQuote < preQuote)) { reject('balance_direction_mismatch'); continue; }
+    if (side === 'buy' && !(postBase < preBase && postQuote > preQuote)) { reject('balance_direction_mismatch'); continue; }
     // Prices are SOL per raw token unit; amounts stay BigInt until ratios/telemetry.
     const priceBefore = Number(preQuote + virtual) / Number(preBase) / 1e9;
     const price = Number(postQuote + virtual) / Number(postBase) / 1e9;
@@ -110,6 +113,9 @@ function parseSwaps(result, onPoolCreated, onMigrationDiagnostic, onTraffic) {
   onTraffic?.({ category: resultSwaps.length
     ? (new Set(resultSwaps.map(s => s.side)).size > 1 ? 'parsed_mixed' : `parsed_${resultSwaps[0].side}`)
     : swaps.length ? 'unparsed_swap' : 'other_transaction',
+    reasons: resultSwaps.length ? ['parsed_swap'] : swaps.length ? [...rejected]
+      : [tx.instructions.some(i => i.program === PUMP && !i.data.subarray(0, 8).equals(CPI_TAG))
+        ? 'unsupported_amm_instruction' : tx.instructions.some(i => i.program === PUMP) ? 'amm_event_only' : 'no_amm_instruction'],
     pools: swaps.map(s => s.ix.accounts[0]).filter(Boolean) });
   return resultSwaps;
 }

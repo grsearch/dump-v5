@@ -50,7 +50,7 @@ npm start
 
 新增默认关闭的小额实盘校准模式：0.05 SOL、持仓上限可配1–20仓（默认20）、不限制总买入尝试和累计亏损；统计跨重启保留，强制六项过滤，并行同金额及1 SOL参考shadow。代码更新不会自动切实盘，启用与核对见[校准说明](helius/OBSERVATION.md)。
 
-### Helius 流量归因（streamTrafficVersion=1）
+### Helius 流量归因（streamTrafficVersion=2）
 
 每 60 秒产生一条 `stream_traffic`，正常停止时补写不足一分钟的部分；记录自动进入现有 COS `analysis.jsonl.gz`。仅复用现有交易解析和接收字节计数，无新增订阅或 RPC，不保存原始报文，不改变交易过滤或止损。
 
@@ -58,10 +58,20 @@ npm start
 
 池子统计取已识别买卖指令的池地址；多池交易平均分摊整条消息字节，属于估算。每分钟最多跟踪 2048 个池，输出前 20 个，其余分别进入 otherPoolByteCount / overflowPoolByteCount；没有池地址的进入 unattributedByteCount。候选池统计不表示其买卖已通过安全校验，更不能仅凭流量认定刷量。池名单每分钟清空，内存和日志量有界。
 
-部署后检查 starting.strategyConfig.streamTrafficVersion=1，运行一分钟后应看到 stream_traffic；导出 15–30 分钟窗口即可开始定位流量来源：
+部署后检查 starting.strategyConfig.streamTrafficVersion=2，运行一分钟后应看到 stream_traffic；导出 15–30 分钟窗口即可开始定位流量来源：
 
 ```bash
 node helius/scripts/stream-traffic-report.js /path/to/analysis.jsonl.gz > traffic-summary.json
 ```
 
 汇总输出分类占比与池榜。池榜仅累加每分钟前 20 名，为下界估算，不是精确全窗口排名；每分钟统计可能跨导出边界，异常退出最多丢失最后一分钟的归因。旧归档没有原始报文，无法补算流量。若 intervals=0，说明文件内尚无新版统计，应先核对部署和导出窗口。
+
+v2 新增 reasons：unsupported_pair、missing_instruction_accounts、multiple_pool_instructions、repeated_pool_swaps、missing_authenticated_swap_event、ambiguous_swap_event、missing_vault_balances、nonpositive_reserves、balance_direction_mismatch；其他交易细分 unsupported_amm_instruction / amm_event_only / no_amm_instruction。多原因消息按原因数均分字节（不是实际指令大小），messages 可重叠，不可累加当交易数。部分可解析的复合交易归 parsed_swap；原因表示首个未通过的校验，不是所有潜在问题。汇总兼容 v1/v2，reasonCoveredByteCount 明确原因统计覆盖的字节数，不能将旧版缺失原因当作零。
+
+### 实盘卖出短重试（exitRetryVersion=1）
+
+账户读取 -32016 且尚未写入待确认交易、或链上已确认卖出滑点失败（6004）时，重试资格等待依次为 250 / 500 / 1000 ms；每仓 60 秒窗口最多 3 次、全局最多 6 次短重试，超额以及其他失败仍等待 10 秒。每次重新读取账户和构建交易，保留原滑点上限。预算随账本保存，重启不会补满。短重试可能增加 RPC 次数，上限约束的是额外短重试，不是全部 RPC 请求。
+
+重试由现有行情/1 秒维护循环驱动，以上是最早可重试时间，不保证毫秒级发出或成交。已失败退出意图会保留，即使行情变旧或价格回升，也继续完成退出。发送超时但有待确认签名时先核对链上结果，不重建交易；其他账户的待确认交易、全局执行锁仍可能延后退出。止盈20%、止损25%、买入金额和过滤条件不变。
+
+部署后核对 starting.strategyConfig.exitRetryVersion=1；自然失败时应出现 exit_retry_scheduled（kind、fast、delayMs、预算计数），随后检查新 sell_submitted 的 triggerToSendMs 和真实回执，不能只看计划等待时间认定已恢复。没有自然失败时无该日志不算部署失败。

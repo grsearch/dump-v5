@@ -26,13 +26,13 @@ function publicConfig(c) {
     'maxSignalAgeMs', 'takeProfit', 'stopLoss', 'trailArm', 'trailDrop', 'maxHoldMs', 'buySlippageBps', 'sellSlippageBps',
     'closeAfterMs', 'cleanupIntervalMs', 'blockhashMs', 'positionPollMs', 'computeUnits', 'priorityLamports', 'tipLamports',
     'maxBytesPerDay', 'maxCandidatesPerMinute'];
-  return { streamTrafficVersion: 1, liveEntryGuardVersion: 1, liveEntryMaxFurtherDropPct: 20, executionExtensionsVersion: 1, ...Object.fromEntries(keys.map(k => [k, c[k]])), shadow: c.shadow && Object.fromEntries(Object.entries(c.shadow).filter(([k]) => !['directory', 'modelFile'].includes(k))) };
+  return { exitRetryVersion: 1, streamTrafficVersion: 2, liveEntryGuardVersion: 1, liveEntryMaxFurtherDropPct: 20, executionExtensionsVersion: 1, ...Object.fromEntries(keys.map(k => [k, c[k]])), shadow: c.shadow && Object.fromEntries(Object.entries(c.shadow).filter(([k]) => !['directory', 'modelFile'].includes(k))) };
 }
 function publicState(data) {
   const pendingKeys = ['side', 'mint', 'signature', 'submittedAt', 'lastValidBlockHeight', 'ata', 'reason', 'createdByBot', 'warned'];
   return { calibration: data.calibration, version: data.version, mode: data.mode, wallet: data.wallet, positions: data.positions, cleanup: data.cleanup,
     pending: Object.fromEntries(Object.entries(data.pending || {}).map(([k, p]) => [k, Object.fromEntries(pendingKeys.filter(n => p[n] !== undefined).map(n => [n, p[n]]))])),
-    cooldown: data.cooldown, streamDays: data.streamDays };
+    cooldown: data.cooldown, streamDays: data.streamDays, exitRetryBudget: data.exitRetryBudget };
 }
 async function atomicJSON(file, data) {
   const fd = await fsp.open(`${file}.tmp`, 'w', 0o600);

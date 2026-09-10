@@ -39,7 +39,28 @@ test('parser attributes buys, sells and rejected swap decoding without reparsing
     f.transaction.meta.postTokenBalances = [];
     assert.equal(parseSwaps(f, null, null, r => { info = r; }).length, 0);
     assert.equal(info.category, 'unparsed_swap');
+    assert.deepEqual(info.reasons, ['missing_vault_balances']);
   }
+});
+
+test('parser explains unsupported pair and transaction without AMM instructions', () => {
+  const f = fixture(); let info;
+  f.transaction.transaction.message.instructions[0].accounts[4] = f.mint;
+  parseSwaps(f, null, null, r => { info = r; });
+  assert.deepEqual(info.reasons, ['unsupported_pair']);
+  f.transaction.transaction.message.instructions = [];
+  f.transaction.meta.innerInstructions = [];
+  parseSwaps(f, null, null, r => { info = r; });
+  assert.deepEqual(info.reasons, ['no_amm_instruction']);
+});
+
+test('traffic reason byte shares reconcile without double counting multi-reason messages', () => {
+  const t = new Traffic(() => {});
+  t.record(100, { category: 'unparsed_swap', reasons: ['unsupported_pair', 'missing_vault_balances', 'unsupported_pair'] });
+  t.record(20, { category: 'control' });
+  const r = t.flush();
+  assert.equal(r.version, 2); assert.equal(r.reasons.unsupported_pair.byteCount, 50);
+  assert.equal(Object.values(r.reasons).reduce((s, v) => s + v.byteCount, 0), r.byteCount);
 });
 
 test('archive report includes telemetry and excludes linked context', async () => {
