@@ -17,6 +17,9 @@ class ExecutionFunnel {
   }
   record(r) {
     const key = r.sourceSignature && r.pool ? `${r.sourceSignature}:${r.pool}` : null;
+    if (r.type === 'live_entry_cancelled') this.add(`entryCancelled:${r.reason}`, key);
+    if (r.type === 'calibration_prebuy_filter' && r.reason === 'prebuy_history_required' && r.signature && r.pool)
+      this.add('historyRequiredCandidates', `${r.signature}:${r.pool}`);
     if (r.type === 'execution_account_read_failed' && r.side === 'buy') {
       this.add('accountReadFailedCandidates', key);
       if (r.code === -32016) this.add('slotLagCandidates', key);

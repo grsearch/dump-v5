@@ -23,7 +23,7 @@ SHADOW_ENABLED=true
 
 批次ID、次数、亏损、已处理签名与买入成本保存在独立calibration.json，重启不清零。旧version=1账本首次启动自动迁移为version=2，保留持仓、待确认交易和所有统计；仅清除原次数/亏损停买原因，账务异常停买原因保留。limits.maxBuys和limits.lossLimitSol为null，表示无限额，不是零额度。不要删除账本或换账本丢掉未完成交易。
 
-六项过滤强制作用于校准买入，包括迁移AGE；历史unknown沿用原允许规则，worker不可用/超时或明确风险拒绝则不买。过滤、持仓与账务状态检查都在发送前；账户、余额、链上成交无法核对时阻止新买入。现有20%止盈、25%止损和移动止盈保持原配置。
+六项过滤强制作用于校准买入，包括迁移AGE；交易历史unknown改为拒绝新买入，只有迁移AGE单独unknown仍允许，worker不可用/超时或明确风险拒绝则不买。过滤、持仓与账务状态检查都在发送前；账户、余额、链上成交无法核对时阻止新买入。现有20%止盈、25%止损和移动止盈保持原配置。
 
 ### 对照与账务
 
@@ -244,3 +244,11 @@ Token-2022补报价修复：允许经结构校验的元数据扩展与ImmutableO
 execution_token_extensions记录version=1、side、sourceSignature、pool、账户role、扩展编号/名称和拒绝原因，不保存元数据正文。execution_account_read_failed/recovered也携带来源信号，可按来源信号+池子去重；旧记录缺少标识时不能重建。execution-audit.json新增executionFunnel：窗口回执按交易签名去重，失败候选按信号去重，扩展类型分组可重叠，不能相加当作完整漏斗。batchSnapshots使用导出时账本全批次计数，不与窗口成交数混比；confirmedBuysInLedger大于attempts标记count_mismatch，需进一步查账，程序不会自动重置或修正额度。
 
 部署保留.env、calibration.json和现有模型。先核对允许/拒绝扩展诊断，再核对真实买卖回执与账户回收；本地真实SDK构建和签名测试不等于链上成交保证。首笔测试按唯一交易签名核对，不能同时把buy_confirmed与calibration_receipt算两笔。
+
+## liveEntryGuardVersion=1：历史不足和准备期间继续下跌
+
+仅LIVE_CALIBRATION=true的新买入生效：priorBuy、priorReturn、consecutivePressure、priorBuyBurst任一unknown即以prebuy_history_required拒绝，不能只等全局启动N秒；每个池子都须满足原history.ready条件（至少60秒可用历史、默认至少10笔及有效特征）。AGE单独unknown仍允许；已有明确风险仍拒绝。纸面及shadow原始研究分组不变，分析实际入场须结合主引擎decision。
+
+继续下跌保护以本次触发砸单后的池价为基准，不是买入均价或前60秒起点。等待过滤和构建期间监听同池、同币、非旧slot的后续行情；一旦下跌达到20%即锁定取消，不因随后反弹重新放行。构建返回的现有RPC账户状态也必须有有效池价，并检查同一20%阈值。发送前取消，尚未提交的签名不登记pending、不增加attempts；行情恶化发生在准备阶段时，原准备名额/冷却可能已经使用。既有已提交交易仍按原签名核对，不能撤回或重建。
+
+不增加API请求、不额外等待；20%为本轮防守阈值，不是已证明盈利的最优值。此保护不能发现尚未到达的行情，也不保证防止发送后的暴跌。卖出、25%止损、30分钟退出及此前失败回执修复不受影响。部署保留.env和账本，无新增必填环境变量；启动核对liveEntryGuardVersion=1和liveEntryMaxFurtherDropPct=20。检查calibration_prebuy_filter.reason=prebuy_history_required及live_entry_cancelled；每日execution-audit.executionFunnel分别去重统计历史拒绝和发送前取消。

@@ -17,6 +17,7 @@ class Engine {
     this.seen = new Map(); this.ticks = 0; this.swaps = 0;
     this.shadow = shadow;
     this.calibration = new (require('./calibration'))(config, store);
+    this.entryGuards = new Map();
     this.migrationDiagnostics = {}; this.migrationDiagnosticSamples = 0;
   }
   shadowEvent(method, ...args) { try { return this.shadow?.[method](...args); } catch (_) { /* Paper filter handles unavailable results; errors never escape the sidecar. */ } }
@@ -34,6 +35,7 @@ class Engine {
       const filter = this.shadowEvent('observe', swap, matchesBaseSignal(swap, this.c), isSignal(swap, this.c));
       const previous = this.lastSlots.get(swap.pool);
       if (previous && swap.slot < previous.slot) continue;
+      for (const guard of this.entryGuards.values()) guard.observe(swap);
       this.lastSlots.set(swap.pool, { slot: swap.slot, at: Date.now() });
       if (this.lastSlots.size > 20000) this.lastSlots.delete(this.lastSlots.keys().next().value);
       const p = this.data.positions[swap.mint];
@@ -58,6 +60,13 @@ class Engine {
   }
   pending() { return Object.keys(this.data.pending).length > 0; }
   async buy(swap, filter) {
+    if (!this.c.calibration?.enabled) return this.prepareBuy(swap, filter);
+    const guard = new (require('./entry-guard').EntryGuard)(swap);
+    const token = Symbol(); this.entryGuards.set(token, guard);
+    try { return await this.prepareBuy(swap, filter, guard); }
+    finally { this.entryGuards.delete(token); }
+  }
+  async prepareBuy(swap, filter, guard) {
     if ((this.c.dryRun && this.c.paperPrebuyFilter) || this.c.calibration?.enabled) {
       const startedAt = Date.now();
       // Same pre-dump snapshot as the research worker; no duplicate history or RPC.
@@ -65,6 +74,7 @@ class Engine {
         : await filter;
       const arm = result?.arm;
       const reason = !arm ? 'prebuy_filter_unavailable' : arm.status === 'reject' ? 'prebuy_risk_filter'
+        : this.c.calibration?.enabled && require('./entry-guard').historyUnavailable(arm) ? 'prebuy_history_required'
         : !isSignal(swap, this.c) ? 'expired_after_prebuy_filter' : null;
       const detail = { version: 1, scope: this.c.calibration?.enabled ? 'live_calibration' : 'paper_only', selectionId: result?.selectionId ?? null,
         status: arm?.status || 'unavailable', rejected: arm?.rejected || [], unknown: arm?.unknown || [], waitMs: Date.now() - startedAt };
@@ -72,6 +82,12 @@ class Engine {
       this.shadowEvent('decision', swap, reason ? 'skipped' : 'prebuy_filter_checked', { reason, prebuyFilter: detail });
       if (reason) return;
     }
+    const rejectGuard = detail => {
+      if (!detail) return false;
+      this.store.log('live_entry_cancelled', { version: 1, mint: swap.mint, pool: swap.pool, sourceSignature: swap.signature, ...detail });
+      this.shadowEvent('decision', swap, 'not_submitted', detail); return true;
+    };
+    if (rejectGuard(guard?.rejected)) return;
     const now = Date.now();
     const reason = this.calibration.reason() || (this.stopped ? 'stopped' : this.busy ? 'wallet_busy' : this.reconciling ? 'reconciling'
       : this.pending() ? 'pending_transaction' : !this.stream.connected ? 'stream_disconnected'
@@ -98,6 +114,7 @@ class Engine {
         this.shadowEvent('decision', swap, 'paper_buy'); return;
       }
       const built = await this.executor.buildSwap('buy', swap);
+      if (guard && rejectGuard(guard.check(built.quoteStatePrice, 'rpc_state', built.quoteStateSlot))) return;
       if (this.stopped || !this.stream.connected || !isSignal(swap, this.c)) {
         this.store.log('signal_expired_before_send', { mint: swap.mint });
         this.shadowEvent('decision', swap, 'not_submitted', { reason: 'expired_or_stopped' }); return;

@@ -105,7 +105,8 @@ class Executor {
       if (!alreadyEnsured) ixs.unshift(ensureAta);
     }
     const signed = await this.sign(ixs, true);
-    return { ...signed, quoteAta: state.userQuoteTokenAccount.toBase58(), senderTipSol: this.c.tipLamports / 1e9, ata: state.userBaseTokenAccount.toBase58(),
+    return { ...signed, quoteStatePrice: (Number(state.poolQuoteAmount.toString()) + Number(state.pool.virtualQuoteReserves?.toString() || 0)) / Number(state.poolBaseAmount.toString()) / 1e9,
+      quoteStateSlot: state.contextSlot, quoteAta: state.userQuoteTokenAccount.toBase58(), senderTipSol: this.c.tipLamports / 1e9, ata: state.userBaseTokenAccount.toBase58(),
       createdByBot: !state.userBaseAccountInfo, stateMs: +stateMs.toFixed(3),
       buildSignMs: +(performance.now() - t0 - stateMs).toFixed(3) };
   }

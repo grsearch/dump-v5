@@ -26,7 +26,7 @@ function publicConfig(c) {
     'maxSignalAgeMs', 'takeProfit', 'stopLoss', 'trailArm', 'trailDrop', 'maxHoldMs', 'buySlippageBps', 'sellSlippageBps',
     'closeAfterMs', 'cleanupIntervalMs', 'blockhashMs', 'positionPollMs', 'computeUnits', 'priorityLamports', 'tipLamports',
     'maxBytesPerDay', 'maxCandidatesPerMinute'];
-  return { executionExtensionsVersion: 1, ...Object.fromEntries(keys.map(k => [k, c[k]])), shadow: c.shadow && Object.fromEntries(Object.entries(c.shadow).filter(([k]) => !['directory', 'modelFile'].includes(k))) };
+  return { liveEntryGuardVersion: 1, liveEntryMaxFurtherDropPct: 20, executionExtensionsVersion: 1, ...Object.fromEntries(keys.map(k => [k, c[k]])), shadow: c.shadow && Object.fromEntries(Object.entries(c.shadow).filter(([k]) => !['directory', 'modelFile'].includes(k))) };
 }
 function publicState(data) {
   const pendingKeys = ['side', 'mint', 'signature', 'submittedAt', 'lastValidBlockHeight', 'ata', 'reason', 'createdByBot', 'warned'];
