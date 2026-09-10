@@ -204,7 +204,8 @@ class Engine {
   }
   accountCalibration(p, receipt) {
     if (!this.c.calibration?.enabled) return;
-    const tx = normalize({ transaction: { transaction: receipt.transaction, meta: receipt.meta }, signature: p.signature, slot: receipt.slot });
+    // Failed receipts still contain authoritative balances/fees. Market parsing must continue to ignore them.
+    const tx = normalize({ transaction: { transaction: receipt.transaction, meta: receipt.meta }, signature: p.signature, slot: receipt.slot }, { allowFailed: true });
     if (!tx) throw new Error('Calibration receipt unavailable');
     this.calibration.receipt(p, receipt, tx);
   }

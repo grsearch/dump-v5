@@ -2,6 +2,12 @@
 
 ## 小额实盘校准（默认关闭）
 
+### 紧急修复：失败回执阻塞退出
+
+旧校准路径使用默认拒绝失败交易的行情normalize解析器处理失败回执，可能持续报Calibration receipt unavailable，无法释放pending，阻塞其他持仓止损、超时卖出和补价。现仅在校准回执账务入口显式允许解析失败交易，记录真实余额/手续费后沿原失败流程清除pending；失败交易仍不作为行情信号，无法获取回执时仍保留pending，不凭超时或截图删除。
+
+部署保留calibration.json和全部待确认记录，让新进程重新核对原签名。检查calibration_receipt(status=failed)、transaction_failed以及待确认是否清除，再核对其他仓位sell_submitted/sell_confirmed。无需重置账本或额度，不修改STOP_LOSS_PCT=25、MAX_HOLD_MS=1800000。本地回归验证了失败买/卖/关户及解除阻塞后的止损和超时退出；服务器具体pending根因和真实成交仍需现场回执确认。
+
 ### 批量账户读取失败排查
 
 `failed to get info for accounts` 来自 web3.js 的 `getMultipleAccountsInfoAndContext`。该前缀不代表具体根因，后面长账户列表可能遮住真正错误。查看 `execution_account_read_failed` 的 code、requestedSlot、contextSlot、retry，以及同次 `operation_error` 完整原因；不要仅凭前缀认定为节点落后。

@@ -6,9 +6,9 @@ const { migrations } = require('./migration');
 const { PUMP, WSOL } = require('./config');
 const CPI_TAG = Buffer.from([228, 69, 165, 46, 81, 203, 154, 29]);
 
-function normalize(result) {
+function normalize(result, { allowFailed = false } = {}) {
   const envelope = result.transaction;
-  if (!envelope?.meta || envelope.meta.err) return null;
+  if (!envelope?.meta || (envelope.meta.err && !allowFailed)) return null;
   const tx = envelope.transaction;
   let keys, instructions;
   if (Array.isArray(tx)) {
