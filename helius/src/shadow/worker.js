@@ -19,13 +19,15 @@ function write(record) {
   const line = JSON.stringify(record) + '\n'; lines.push(line); bytes += Buffer.byteLength(line);
   if (bytes >= 1024 * 1024) flush();
 }
-const tracker = new Tracker(config, write, { runId });
+const tracker = new Tracker(config, r => write({ ...r, ...(config.calibration?.enabled ? { calibrationRole: 'same_size' } : {}) }), { runId });
+const reference = config.calibration?.enabled ? new Tracker({ ...config, sizeSol: 1, stateQuotes: false,
+  exitComparisons: false, entryComparisons: false }, r => write({ ...r, calibrationRole: 'reference_1_sol' }), { runId: runId + '-reference' }) : null;
 const ageFile = path.join(config.directory, 'migration-age-cache.json');
 let ageCacheStatus = 'missing';
 try {
   if (fs.statSync(ageFile).size <= 16 * 1024 * 1024) {
     const entries = JSON.parse(fs.readFileSync(ageFile, 'utf8'));
-    if (Array.isArray(entries)) { for (const e of entries.slice(-20000)) tracker.ages.created(e, true); ageCacheStatus = 'loaded'; }
+    if (Array.isArray(entries)) { for (const e of entries.slice(-20000)) { tracker.ages.created(e, true); reference?.ages.created(e, true); } ageCacheStatus = 'loaded'; }
     else ageCacheStatus = 'invalid';
   } else ageCacheStatus = 'oversized';
 } catch (e) { ageCacheStatus = e.code === 'ENOENT' ? 'missing' : 'read_failed'; }
@@ -38,15 +40,15 @@ function saveAges() {
   } catch (_) { ageCacheStatus = 'write_failed'; }
   lastAgeSave = Date.now();
 }
-function publish(status = 'running') { parentPort.postMessage({ type: 'status', value: { status, ...tracker.stats(), ageCacheStatus, file: name } }); }
+function publish(status = 'running') { parentPort.postMessage({ type: 'status', value: { status, ...tracker.stats(), calibrationReference: reference?.stats() ?? null, ageCacheStatus, file: name } }); }
 const timer = setInterval(() => {
-  tracker.tick(Date.now()); flush(); if (Date.now() - lastAgeSave >= 60000) saveAges(); publish();
+  tracker.tick(Date.now()); reference?.tick(Date.now()); flush(); if (Date.now() - lastAgeSave >= 60000) saveAges(); publish();
   const targets = tracker.stateTargets(); if (targets.length) parentPort.postMessage({ type: 'state_quote_request', targets });
 }, 1000);
 parentPort.on('message', msg => {
   if (closing) return;
   if (msg.type === 'close') {
-    closing = true; clearInterval(timer); tracker.gap('process_shutdown', msg.at); flush(); saveAges(); fs.closeSync(fd); publish('closed'); parentPort.close(); return;
+    closing = true; clearInterval(timer); tracker.gap('process_shutdown', msg.at); reference?.gap('process_shutdown', msg.at); flush(); saveAges(); fs.closeSync(fd); publish('closed'); parentPort.close(); return;
   }
   if (msg.type !== 'batch') return;
   for (const event of msg.events) {
@@ -55,13 +57,15 @@ parentPort.on('message', msg => {
       const selection = tracker.onSwap(event.swap, event.candidate, event.fresh);
       if (event.filterId) parentPort.postMessage({ type: 'paper_filter', filterId: event.filterId,
         selection: selection ? { selectionId: selection.selectionId, arm: selection.arms.prebuyCombined } : null });
+      reference?.onSwap(event.swap, event.candidate, event.fresh);
     }
     if (event.type === 'pool_created' && tracker.ages.created(event.event)) {
+      reference?.ages.created(event.event);
       ageDirty = true; tracker.emit({ type: 'pump_migrated', at: event.event.observedAt, ...event.event });
     }
-    if (event.type === 'connection') tracker.connection(event.connected, event.at);
-    if (event.type === 'gap') { tracker.gap(event.reason, event.at); tracker.connection(true, event.at); }
-    if (event.type === 'decision') tracker.decision(event.key, event.status, event.at, event.extra);
+    if (event.type === 'connection') { tracker.connection(event.connected, event.at); reference?.connection(event.connected, event.at); }
+    if (event.type === 'gap') { tracker.gap(event.reason, event.at); tracker.connection(true, event.at); reference?.gap(event.reason, event.at); reference?.connection(true, event.at); }
+    if (event.type === 'decision') { tracker.decision(event.key, event.status, event.at, event.extra); reference?.decision(event.key, event.status, event.at, event.extra); }
   }
   // A delayed queue may conservatively censor samples; it must never invent coverage.
   parentPort.postMessage({ type: 'ack' });

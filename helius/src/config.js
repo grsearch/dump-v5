@@ -24,22 +24,25 @@ function readConfig(env = process.env) {
   }
   const apiKey = env.HELIUS_API_KEY || '';
   const dryRun = bool('DRY_RUN', true);
+  const calibration = bool('LIVE_CALIBRATION', false);
   const senderUrl = endpoint(env.HELIUS_SENDER_URL || 'http://slc-sender.helius-rpc.com/fast', ['http:', 'https:']);
   const swqos = new URL(senderUrl).searchParams.get('swqos_only') === 'true';
   const c = {
     dryRun, apiKey,
+    calibration: { enabled: calibration, maxBuys: num('CALIBRATION_MAX_BUYS', 20, 1, 20, true),
+      lossLimitSol: num('CALIBRATION_LOSS_LIMIT_SOL', 0.1, 0.001, 0.1), referenceSizeSol: 1 },
     paperPrebuyFilter: bool('PAPER_PREBUY_FILTER', true),
     rpcUrl: endpoint(env.HELIUS_RPC_URL || `https://mainnet.helius-rpc.com/?api-key=${encodeURIComponent(apiKey)}`, ['https:']),
     wsUrl: endpoint(env.HELIUS_WS_URL || `wss://mainnet.helius-rpc.com/?api-key=${encodeURIComponent(apiKey)}`, ['wss:']),
     senderUrl,
     privateKey: env.WALLET_PRIVATE_KEY_BS58 || '',
-    stateFile: path.resolve(__dirname, '..', env.STATE_FILE || `data/${dryRun ? 'paper' : 'live'}.json`),
+    stateFile: path.resolve(__dirname, '..', env.STATE_FILE || (calibration ? 'data/calibration.json' : `data/${dryRun ? 'paper' : 'live'}.json`)),
     minSellSol: num('MIN_SELL_SOL', 8, 0.001, 1e9),
     minImpact: num('MIN_PRICE_IMPACT_PCT', 10, 0, 99),
     maxImpact: num('MAX_PRICE_IMPACT_PCT', 30, 0, 99),
     minLiquidity: num('MIN_POOL_QUOTE_SOL', 30, 0, 1e9),
-    sizeSol: num('POSITION_SIZE_SOL', 1, 0.000001, 1000),
-    maxPositions: num('MAX_CONCURRENT_POSITIONS', 20, 1, 30, true),
+    sizeSol: calibration ? num('CALIBRATION_SIZE_SOL', 0.05, 0.001, 0.05) : num('POSITION_SIZE_SOL', 1, 0.000001, 1000),
+    maxPositions: calibration ? 1 : num('MAX_CONCURRENT_POSITIONS', 20, 1, 30, true),
     cooldownMs: num('COOLDOWN_MS', 30000, 0, 86400000, true),
     maxSignalAgeMs: num('MAX_SIGNAL_AGE_MS', 2500, 250, 10000, true),
     takeProfit: num('TAKE_PROFIT_PCT', 20, 0.1, 10000),
@@ -87,6 +90,7 @@ function readConfig(env = process.env) {
       experimentLossCooldownMs: num('SHADOW_EXPERIMENT_LOSS_COOLDOWN_MS', 600000, 30000, 86400000, true),
     },
   };
+  if (calibration && (dryRun || !c.shadow.enabled)) throw new Error('LIVE_CALIBRATION requires live mode and SHADOW_ENABLED');
   if (c.shadow.entryDelayMs > c.shadow.entryDeadlineMs) throw new Error('SHADOW_ENTRY_DELAY_MS exceeds entry deadline');
   if (c.minImpact > c.maxImpact) throw new Error('MIN_PRICE_IMPACT_PCT exceeds maximum');
   if (!apiKey && !env.HELIUS_RPC_URL) throw new Error('HELIUS_API_KEY is required');

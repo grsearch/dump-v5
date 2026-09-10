@@ -284,3 +284,15 @@ test('archive keeps account-state results, stream recoveries, pending and unknow
   assert.equal(q.audit.stateQuotes.reasons.missing_account, 1);
   assert.equal(q.audit.stateQuotes.extensionRejections['baseMint:14:TransferHook'], 1);
 });
+
+test('daily archive includes calibration ledger and live versus same-size shadow audit', async t => {
+  const f = fixture(t), at = f.end - 1000;
+  write(path.join(f.dir, 'calibration.json.jsonl'), [{ time: new Date(at).toISOString(), type: 'calibration_receipt',
+    batchId: 'batch', side: 'sell', status: 'confirmed', signature: 'sell', sourceSignature: 'signal', pool: 'p', netPnlSol: -.01 }]);
+  write(path.join(f.env.SHADOW_DIRECTORY, 'samples-calibration.jsonl'), [{ type: 'execution_comparison', at,
+    key: 'signal:p', calibrationRole: 'same_size', status: 'observed_proxy', netPnlSol: -.02, executionPolicy: { sizeSol: .05 } }]);
+  const archive = await buildArchive({ c: f.c, outputDir: path.join(f.dir, 'calibration-export'), end: f.end });
+  const report = await require('../src/reporting/execution-audit').executionAudit(archive.folder);
+  assert.equal(report.calibration.paired, 1);
+  assert.equal(report.calibration.rows[0].differenceSol, .01);
+});

@@ -22,7 +22,7 @@ function scrub(value, secrets = []) {
   return value;
 }
 function publicConfig(c) {
-  const keys = ['dryRun', 'paperPrebuyFilter', 'minSellSol', 'minImpact', 'maxImpact', 'minLiquidity', 'sizeSol', 'maxPositions', 'cooldownMs',
+  const keys = ['calibration', 'dryRun', 'paperPrebuyFilter', 'minSellSol', 'minImpact', 'maxImpact', 'minLiquidity', 'sizeSol', 'maxPositions', 'cooldownMs',
     'maxSignalAgeMs', 'takeProfit', 'stopLoss', 'trailArm', 'trailDrop', 'maxHoldMs', 'buySlippageBps', 'sellSlippageBps',
     'closeAfterMs', 'cleanupIntervalMs', 'blockhashMs', 'positionPollMs', 'computeUnits', 'priorityLamports', 'tipLamports',
     'maxBytesPerDay', 'maxCandidatesPerMinute'];
@@ -30,7 +30,7 @@ function publicConfig(c) {
 }
 function publicState(data) {
   const pendingKeys = ['side', 'mint', 'signature', 'submittedAt', 'lastValidBlockHeight', 'ata', 'reason', 'createdByBot', 'warned'];
-  return { version: data.version, mode: data.mode, wallet: data.wallet, positions: data.positions, cleanup: data.cleanup,
+  return { calibration: data.calibration, version: data.version, mode: data.mode, wallet: data.wallet, positions: data.positions, cleanup: data.cleanup,
     pending: Object.fromEntries(Object.entries(data.pending || {}).map(([k, p]) => [k, Object.fromEntries(pendingKeys.filter(n => p[n] !== undefined).map(n => [n, p[n]]))])),
     cooldown: data.cooldown, streamDays: data.streamDays };
 }
@@ -64,7 +64,7 @@ async function buildArchive({ c, outputDir, end, start = end - DAY, manual = fal
   const folder = path.join(outputDir, manual ? `manual-${new Date(end).toISOString().replace(/[:.]/g, '-')}-${crypto.randomUUID()}` : dayName(end));
   await fsp.mkdir(folder, { recursive: true, mode: 0o700 });
   const sources = [];
-  const files = [...new Set([`${c.stateFile}.jsonl`, path.join(path.dirname(c.stateFile), 'paper.json.jsonl'), path.join(path.dirname(c.stateFile), 'live.json.jsonl')].map(f => path.resolve(f)))];
+  const files = [...new Set([`${c.stateFile}.jsonl`, path.join(path.dirname(c.stateFile), 'paper.json.jsonl'), path.join(path.dirname(c.stateFile), 'live.json.jsonl'), path.join(path.dirname(c.stateFile), 'calibration.json.jsonl')].map(f => path.resolve(f)))];
   const shadows = await fsp.readdir(c.shadow.directory).catch(e => { if (e.code === 'ENOENT') return []; throw e; });
   files.push(...shadows.filter(n => /^samples-.*\.jsonl$/.test(n)).map(n => path.join(c.shadow.directory, n)));
   for (const file of files) {
@@ -110,7 +110,7 @@ async function buildArchive({ c, outputDir, end, start = end - DAY, manual = fal
       } else stats.contextRecords++;
       yield JSON.stringify({ dataset: source.dataset, source: source.name, sourceId: source.id, line, context: !inside, record: scrub(r, secrets) }) + '\n';
     }
-    const stateFiles = [...new Set([c.stateFile, path.join(path.dirname(c.stateFile), 'paper.json'), path.join(path.dirname(c.stateFile), 'live.json')].map(f => path.resolve(f)))];
+    const stateFiles = [...new Set([c.stateFile, path.join(path.dirname(c.stateFile), 'paper.json'), path.join(path.dirname(c.stateFile), 'live.json'), path.join(path.dirname(c.stateFile), 'calibration.json')].map(f => path.resolve(f)))];
     for (const file of stateFiles) {
       try { const data = JSON.parse(await fsp.readFile(file, 'utf8')); yield JSON.stringify({ dataset: 'state_snapshot', source: path.basename(file), record: scrub(publicState(data), secrets) }) + '\n'; }
       catch (e) { if (e.code !== 'ENOENT') throw new Error('Could not read consistent state snapshot'); }

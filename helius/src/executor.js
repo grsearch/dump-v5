@@ -9,6 +9,11 @@ const { performance } = require('node:perf_hooks');
 const { PUMP, WSOL } = require('./config');
 
 const TIP = new PublicKey('4ACfpUFoaSD9bfPdeu6DBt89gB6ENTeHBXCAi87NhDEE');
+function buyQuoteLamports(c) {
+  const budget = new BN(Math.round(c.sizeSol * 1e9).toString());
+  // SDK expands the quote by slippage. Reserve that allowance inside the calibration cap.
+  return c.calibration?.enabled ? budget.muln(10000).divn(10000 + c.buySlippageBps) : budget;
+}
 class Executor {
   constructor(config, store) {
     this.c = config; this.store = store; this.rpcCalls = 0; this.blockhash = null;
@@ -80,11 +85,12 @@ class Executor {
     const stateMs = performance.now() - t0;
     const account = state.userBaseAccountInfo ? unpackAccount(state.userBaseTokenAccount, state.userBaseAccountInfo, state.baseTokenProgram) : null;
     if (account && (!account.owner.equals(this.wallet.publicKey) || account.isFrozen)) throw new Error('Invalid wallet token account');
+    if (this.c.calibration?.enabled && side === 'buy' && state.userQuoteAccountInfo) throw new Error('Calibration requires no pre-existing WSOL account; use a dedicated wallet');
     if (side === 'buy' && account?.amount > 0n) throw new Error('Wallet already holds this mint; refusing to merge external holdings');
     if (side === 'buy' && Number(state.poolQuoteAmount.toString()) / 1e9 < this.c.minLiquidity) throw new Error('Pool liquidity below threshold');
     if (side === 'sell' && (!account || account.amount < BigInt(rawAmount))) throw new Error('Wallet balance below tracked position');
     const ixs = side === 'buy'
-      ? await PUMP_AMM_SDK.buyQuoteInput(state, new BN(Math.round(this.c.sizeSol * 1e9).toString()), this.c.buySlippageBps / 100)
+      ? await PUMP_AMM_SDK.buyQuoteInput(state, buyQuoteLamports(this.c), this.c.buySlippageBps / 100)
       : await PUMP_AMM_SDK.sellBaseInput(state, new BN(rawAmount), this.c.sellSlippageBps / 100);
     // Reused ATA may have been closed since a previous trade. This instruction is race-safe.
     if (side === 'buy') {
@@ -95,7 +101,7 @@ class Executor {
       if (!alreadyEnsured) ixs.unshift(ensureAta);
     }
     const signed = await this.sign(ixs, true);
-    return { ...signed, ata: state.userBaseTokenAccount.toBase58(),
+    return { ...signed, quoteAta: state.userQuoteTokenAccount.toBase58(), senderTipSol: this.c.tipLamports / 1e9, ata: state.userBaseTokenAccount.toBase58(),
       createdByBot: !state.userBaseAccountInfo, stateMs: +stateMs.toFixed(3),
       buildSignMs: +(performance.now() - t0 - stateMs).toFixed(3) };
   }
@@ -138,7 +144,7 @@ class Executor {
     if (!account.owner.equals(this.wallet.publicKey) || !account.mint.equals(new PublicKey(item.mint))) throw new Error('Account owner/mint mismatch');
     if (account.amount !== 0n || (account.closeAuthority && !account.closeAuthority.equals(this.wallet.publicKey))) throw new Error('Account not empty or close authority differs');
     // A nonzero balance arriving after this check causes CloseAccount to fail atomically on-chain.
-    return this.sign([createCloseAccountInstruction(expected, this.wallet.publicKey, this.wallet.publicKey, [], new PublicKey(item.tokenProgram))], false);
+    return { ...(await this.sign([createCloseAccountInstruction(expected, this.wallet.publicKey, this.wallet.publicKey, [], new PublicKey(item.tokenProgram))], false)), ata: expected.toBase58(), senderTipSol: 0 };
   }
   async receipt(signature, commitment = 'confirmed') {
     this.rpcCalls++;
@@ -152,3 +158,4 @@ class Executor {
   stop() { clearInterval(this.timer); clearInterval(this.pingTimer); }
 }
 module.exports = Executor;
+module.exports.buyQuoteLamports = buyQuoteLamports;

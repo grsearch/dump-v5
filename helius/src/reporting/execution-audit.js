@@ -27,6 +27,7 @@ function decompose(paperPnl, comparison) {
 async function executionAudit(directory) {
   const quality = await require('../../scripts/inspect-export').inspect(directory);
   const start = Date.parse(quality.window.start), end = Date.parse(quality.window.endExclusive);
+  const calibrationReceipts = new Map(), calibrationComparisons = new Map();
   const sells = new Map(), comparisons = new Map(), filters = new Map();
   const input = fs.createReadStream(path.join(directory, 'analysis.jsonl.gz')), unzip = zlib.createGunzip();
   input.on('error', e => unzip.destroy(e)); input.pipe(unzip);
@@ -34,7 +35,12 @@ async function executionAudit(directory) {
     for await (const line of readline.createInterface({ input: unzip, crlfDelay: Infinity })) {
       const { dataset, record: r } = JSON.parse(line), at = r.at ?? Date.parse(r.time);
       if (dataset === 'trading' && r.type === 'paper_sell' && at >= start && at < end && r.positionId && r.pool) sells.set(`${r.positionId}:${r.pool}`, r);
-      if (dataset === 'shadow' && r.type === 'execution_comparison') comparisons.set(r.key, r);
+      if (dataset === 'shadow' && r.type === 'execution_comparison' && at < end) {
+        if (r.calibrationRole) calibrationComparisons.set(r.calibrationRole + ':' + r.key, r);
+        if (r.calibrationRole !== 'reference_1_sol') comparisons.set(r.key, r);
+      }
+      if (dataset === 'trading' && r.type === 'calibration_receipt' && at < end) calibrationReceipts.set(r.batchId + ':' + r.signature, r);
+      if (calibrationReceipts.size > 100000 || calibrationComparisons.size > 200000) throw new Error('Calibration audit size limit');
       if (dataset === 'trading' && r.type === 'paper_prebuy_filter' && at < end && r.signature && r.pool) filters.set(`${r.signature}:${r.pool}`, r);
       if (sells.size > 100000 || comparisons.size > 100000 || filters.size > 100000) throw new Error('Execution audit size limit exceeded');
     }
@@ -63,7 +69,7 @@ async function executionAudit(directory) {
     }
     rows.push(row);
   }
-  return { schema: 2, window: quality.window, totals, costSummary: costSummary(rows), migrationPipeline: quality.audit.migrationPipeline,
+  return { schema: 2, calibration: require('./calibration-audit').calibrationAudit(calibrationReceipts, calibrationComparisons, start, end), window: quality.window, totals, costSummary: costSummary(rows), migrationPipeline: quality.audit.migrationPipeline,
     note: 'Signed accounting bridge under fixed proxy assumptions, not causal attribution or actual fees. Timing term also includes exit-rule and position-size differences. Missing observations remain unknown.', rows };
 }
 function costSummary(rows) {

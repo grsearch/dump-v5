@@ -16,6 +16,7 @@ class Engine {
     this.lastSlots = new Map(); this.lastPoll = 0; this.lastCleanup = 0;
     this.seen = new Map(); this.ticks = 0; this.swaps = 0;
     this.shadow = shadow;
+    this.calibration = new (require('./calibration'))(config, store);
     this.migrationDiagnostics = {}; this.migrationDiagnosticSamples = 0;
   }
   shadowEvent(method, ...args) { try { return this.shadow?.[method](...args); } catch (_) { /* Paper filter handles unavailable results; errors never escape the sidecar. */ } }
@@ -56,7 +57,7 @@ class Engine {
   }
   pending() { return Object.keys(this.data.pending).length > 0; }
   async buy(swap, filter) {
-    if (this.c.dryRun && this.c.paperPrebuyFilter) {
+    if ((this.c.dryRun && this.c.paperPrebuyFilter) || this.c.calibration?.enabled) {
       const startedAt = Date.now();
       // Same pre-dump snapshot as the research worker; no duplicate history or RPC.
       const result = swap.sellSol >= 40 ? { arm: { status: 'reject', rejected: [{ check: 'dumpSize', reason: 'dump_size_below_40_sol' }] } }
@@ -64,18 +65,18 @@ class Engine {
       const arm = result?.arm;
       const reason = !arm ? 'prebuy_filter_unavailable' : arm.status === 'reject' ? 'prebuy_risk_filter'
         : !isSignal(swap, this.c) ? 'expired_after_prebuy_filter' : null;
-      const detail = { version: 1, scope: 'paper_only', selectionId: result?.selectionId ?? null,
+      const detail = { version: 1, scope: this.c.calibration?.enabled ? 'live_calibration' : 'paper_only', selectionId: result?.selectionId ?? null,
         status: arm?.status || 'unavailable', rejected: arm?.rejected || [], unknown: arm?.unknown || [], waitMs: Date.now() - startedAt };
-      this.store.log('paper_prebuy_filter', { mint: swap.mint, pool: swap.pool, signature: swap.signature, ...detail, reason });
+      this.store.log(this.c.calibration?.enabled ? 'calibration_prebuy_filter' : 'paper_prebuy_filter', { mint: swap.mint, pool: swap.pool, signature: swap.signature, ...detail, reason });
       this.shadowEvent('decision', swap, reason ? 'skipped' : 'prebuy_filter_checked', { reason, prebuyFilter: detail });
       if (reason) return;
     }
     const now = Date.now();
-    const reason = this.stopped ? 'stopped' : this.busy ? 'wallet_busy' : this.reconciling ? 'reconciling'
+    const reason = this.calibration.reason() || (this.stopped ? 'stopped' : this.busy ? 'wallet_busy' : this.reconciling ? 'reconciling'
       : this.pending() ? 'pending_transaction' : !this.stream.connected ? 'stream_disconnected'
         : this.stream.budgetExceeded() ? 'stream_budget' : this.data.positions[swap.mint] ? 'already_held'
           : Object.keys(this.data.positions).length >= this.c.maxPositions ? 'position_limit'
-            : (this.data.cooldown[swap.mint] || 0) > now ? 'cooldown' : this.data.seen[swap.signature] ? 'duplicate_signal' : null;
+            : (this.data.cooldown[swap.mint] || 0) > now ? 'cooldown' : this.data.seen[swap.signature] ? 'duplicate_signal' : null);
     if (reason) { this.shadowEvent('decision', swap, 'skipped', { reason }); return; }
     const minute = Math.floor(now / 60000);
     if (minute !== this.minute) { this.minute = minute; this.candidates = 0; }
@@ -103,6 +104,7 @@ class Engine {
       const previousCleanup = this.data.cleanup[swap.mint];
       const pending = { ...built, side: 'buy', mint: swap.mint, swap, createdByBot: built.createdByBot || previousCleanup?.createdByBot || false, submittedAt: Date.now() };
       // Persist signed bytes before sending. Reconcile uncertainty; never rebuild an unknown transaction.
+      this.calibration.reserve(pending);
       this.data.pending[pending.signature] = pending;
       const journalStartedAt = Date.now();
       this.store.save();
@@ -155,10 +157,14 @@ class Engine {
       const statuses = (await this.executor.rpc.getSignatureStatuses(entries.map(p => p.signature), { searchTransactionHistory: true })).value;
       for (let i = 0; i < entries.length; i++) {
         const p = entries[i], status = statuses[i];
-        if (status?.err && ['confirmed', 'finalized'].includes(status.confirmationStatus)) { this.failPending(p, 'chain_error', status.err); continue; }
+        if (status?.err && ['confirmed', 'finalized'].includes(status.confirmationStatus)) {
+          if (this.c.calibration?.enabled) { const receipt = await this.executor.receipt(p.signature); if (!receipt) continue; this.accountCalibration(p, receipt); }
+          this.failPending(p, 'chain_error', status.err); continue;
+        }
         if (status && ['confirmed', 'finalized'].includes(status.confirmationStatus)) {
           if (p.side === 'close') {
             if (status.confirmationStatus !== 'finalized') continue;
+            if (this.c.calibration?.enabled) { const receipt = await this.executor.receipt(p.signature, 'finalized'); if (!receipt) continue; this.accountCalibration(p, receipt); }
             delete this.data.cleanup[p.mint]; delete this.data.pending[p.signature];
             this.store.save(); this.store.log('account_closed', { mint: p.mint, signature: p.signature }); continue;
           }
@@ -171,6 +177,7 @@ class Engine {
             const receipt = await this.executor.receipt(p.signature, 'finalized');
             if (receipt && p.side !== 'close') this.applyReceipt(p, receipt);
             else if (receipt && p.side === 'close') {
+              this.accountCalibration(p, receipt);
               if (receipt.meta?.err) this.failPending(p, 'receipt_error', receipt.meta.err);
               else {
                 delete this.data.cleanup[p.mint]; delete this.data.pending[p.signature]; this.store.save();
@@ -187,13 +194,21 @@ class Engine {
     } finally { this.reconciling = false; }
   }
   failPending(p, reason, chainError) {
+    if (reason === 'expired_unlanded') this.calibration.unlanded(p);
     delete this.data.pending[p.signature];
     if (this.data.positions[p.mint]) this.data.positions[p.mint].retryAfter = Date.now() + 10000;
     if (p.side === 'close' && this.data.cleanup[p.mint]) this.data.cleanup[p.mint].dueAt = Date.now() + this.c.cleanupIntervalMs;
     this.store.save(); this.store.log('transaction_failed', { signature: p.signature, side: p.side, reason, chainError });
     if (p.swap) this.shadowEvent('decision', p.swap, 'transaction_failed', { side: p.side, signature: p.signature, reason });
   }
+  accountCalibration(p, receipt) {
+    if (!this.c.calibration?.enabled) return;
+    const tx = normalize({ transaction: { transaction: receipt.transaction, meta: receipt.meta }, signature: p.signature, slot: receipt.slot });
+    if (!tx) throw new Error('Calibration receipt unavailable');
+    this.calibration.receipt(p, receipt, tx);
+  }
   applyReceipt(p, receipt) {
+    this.accountCalibration(p, receipt);
     if (receipt.meta?.err) { this.failPending(p, 'receipt_error', receipt.meta.err); return; }
     const result = { transaction: { transaction: receipt.transaction, meta: receipt.meta }, signature: p.signature, slot: receipt.slot };
     const tx = normalize(result);
@@ -305,7 +320,7 @@ class Engine {
     for (const day of days.slice(0, -7)) delete this.data.streamDays[day];
     this.store.save();
     const dayBytes = this.data.streamDays[new Date().toISOString().slice(0, 10)] || 0;
-    this.store.log('health', { connected: this.stream.connected, transactions: this.ticks, parsedSwaps: this.swaps,
+    this.store.log('health', { calibration: this.calibration.s ? { batchId: this.calibration.s.batchId, attempts: this.calibration.s.attempts, lossSol: this.calibration.s.lossSol, stoppedReason: this.calibration.reason(), limits: this.calibration.s.limits } : null, connected: this.stream.connected, transactions: this.ticks, parsedSwaps: this.swaps,
       rpcRequests: this.executor.rpcCalls + (this.shadowEvent('stats')?.stateQuotes?.requests || 0), migrationDiagnostics: this.migrationDiagnostics,
       positions: Object.keys(this.data.positions).length, pending: Object.keys(this.data.pending).length,
       streamMBToday: +(dayBytes / 1e6).toFixed(3), estimatedStreamCreditsToday: +(dayBytes / 1e6 * 20).toFixed(1) });

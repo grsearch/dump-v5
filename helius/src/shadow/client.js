@@ -7,18 +7,18 @@ class ShadowClient {
     this.status = { status: 'disabled' }; this.enabled = !!c.shadow?.enabled;
     this.queue = []; this.inFlight = false; this.scheduled = false; this.dropped = 0; this.needsGap = false;
     this.accepting = true; this.exited = false; this.drain = null;
-    this.paperFilter = c.dryRun && c.paperPrebuyFilter; this.filters = new Map(); this.filterSequence = 0;
+    this.paperFilter = (c.dryRun && c.paperPrebuyFilter) || !!c.calibration?.enabled; this.filters = new Map(); this.filterSequence = 0;
     if (!this.enabled) return;
     this.stateQuotes = new (require('./state-quotes').StateQuotes)(c);
     // Never serialize the wallet secret or the API URL/key into a learning event or workerData.
-    const config = { ...c.shadow, sizeSol: c.sizeSol, takeProfit: c.takeProfit, stopLoss: c.stopLoss,
+    const config = { ...c.shadow, calibration: c.calibration, sizeSol: c.sizeSol, takeProfit: c.takeProfit, stopLoss: c.stopLoss,
       trailArm: c.trailArm, trailDrop: c.trailDrop, maxHoldMs: c.maxHoldMs,
       minSellSol: c.minSellSol, minImpact: c.minImpact, maxImpact: c.maxImpact, minLiquidity: c.minLiquidity,
       maxSourceLagMs: c.maxSignalAgeMs + 1000,
       networkFeeSol: (5000 + c.priorityLamports + c.tipLamports) / 1e9 };
     try {
       this.worker = workerFactory(path.join(__dirname, 'worker.js'), { workerData: config,
-        resourceLimits: { maxOldGenerationSizeMb: 256 }, env: {} });
+        resourceLimits: { maxOldGenerationSizeMb: c.calibration?.enabled ? 512 : 256 }, env: {} });
       this.status = { status: 'starting' };
       this.worker.on('message', msg => {
         if (msg.type === 'paper_filter') this.filters.get(msg.filterId)?.(msg.selection);

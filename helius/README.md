@@ -1,5 +1,46 @@
 # Helius PumpSwap 全网砸单版
 
+## 小额实盘校准（默认关闭）
+
+此模式用于测量实际执行与shadow偏差，不是证明策略已盈利。仅部署代码不会发送实盘订单，默认DRY_RUN=true、LIVE_CALIBRATION=false保持纸面。
+
+启用配置（在实际运行的helius/.env中设置；本次代码更新不会代填钱包或切换模式）：
+
+```dotenv
+DRY_RUN=false
+LIVE_CALIBRATION=true
+CALIBRATION_SIZE_SOL=0.05
+CALIBRATION_MAX_BUYS=20
+CALIBRATION_LOSS_LIMIT_SOL=0.1
+STATE_FILE=data/calibration.json
+SHADOW_ENABLED=true
+```
+
+另需配置专用钱包WALLET_PRIVATE_KEY_BS58及现有Helius凭据，密钥不入仓库。不要与其他交易程序共享钱包。已有持仓/待确认交易应使用原模式原账本先完成处理，不能换账本丢掉它们。校准买入拒绝已有WSOL账户，避免外部余额干扰；原实盘执行路径仍拒绝Token扩展币，准备失败必须单独统计，不代表所有候选都能执行。
+
+校准强制最多1个持仓，买币付款上限使用CALIBRATION_SIZE_SOL（上限0.05，交易费/tip及开户押金另计）；SDK滑点余量包含在该上限内，因此实际买入本金可能更小，忽略原POSITION_SIZE_SOL=1及MAX_CONCURRENT_POSITIONS=20。最多20次已签名买入尝试，包括失败和过期未落链，不是保证20笔成功买入；同一未知签名重试不重复记次数。不确定交易先核对，不能重新构建第二笔买单。
+
+累计亏损默认0.1 SOL、上限0.1：逐笔已实现经济亏损加失败/关闭账户费用，盈利不抵扣已发生亏损。达到限额只停止新买入，仍核对pending、卖出持仓及回收账户。限额不包括未实现浮亏，也不能保证跳价、退出失败或持续退出费用不会超限。达到20次后同样只停止新买入。
+
+预算、批次ID、已处理签名与买入成本保存在独立calibration.json，重启不清零；已有批次不接受改大限额，关闭校准模式也不能继续使用该账本。不要删除/改名账本来重置额度；下一批次应先导出分析并核对所有余额、挂单和账户回收，再另行安排。
+
+六项过滤强制作用于校准买入，包括迁移AGE；历史unknown沿用原允许规则，worker不可用/超时或明确风险拒绝则不买。过滤、持仓与预算检查都在发送前；账户、余额、链上成交无法核对时阻止新买入。现有20%止盈、25%止损和移动止盈保持原配置。
+
+### 对照与账务
+
+同一Helius流同时生成same_size（0.05 SOL）和reference_1_sol（1 SOL）两份shadow，使用不同runId/policyId，不能合并收益。只让同金额shadow发原预算内补报价请求；1 SOL参考保留基准代理观察，不另发RPC、不复制全部退出研究。原冻结模型与1 SOL策略匹配，保留在参考组；同金额模型policy不匹配会明确标记，不强行复用概率。六项过滤不依赖这些评分。
+
+链上calibration_receipt记录签名、来源信号、到账代币原始数量变化、提交/收到回执时间、落链slot、钱包SOL变化、托管ATA/WSOL账户lamport变化、meta.fee、已签交易tip和计算单元消耗。meta.fee已经包含优先费，不再次相加；不把配置值伪装成额外实测手续费。链上blockTime只有秒级，不宣称它是精确毫秒落链时间。交易以confirmed回执处理，关闭账户等待finalized；不能把confirmed当作最终不可回滚。
+
+成交净收益由买卖两笔钱包现金变化加托管账户lamport变化核对，排除这些账户租金存入/退回的影响。失败交易费和close费用另外计入累计亏损；不要再从净收益重复扣meta.fee或tip。其他协议账户初始化支出可能仍在现金成本内，不伪装成可退租金；极端或缺失账务标记停止新买入。使用专用钱包，避免外部入金/转账或额外持仓干扰解释。
+
+每日COS归档自动包含calibration.json快照及calibration.json.jsonl；execution-audit.json新增calibration对象，含真实回执和同信号的同金额shadow对照，另列1 SOL参考。配对失败/行情缺口保持unknown，不补零。该报告只配连续shadow结果，后续补报价记录仍在原归档中。面板原纸面盈利统计不代表本校准实盘盈亏，以calibration报告为准。
+
+### 启动后核对
+
+starting.strategyConfig.calibration.enabled=true、sizeSol=0.05、maxPositions=1；health.calibration包含batchId/attempts/lossSol/stoppedReason。shadow两份session分别有calibrationRole=same_size/reference_1_sol，sizeSol分别0.05/1。首笔先核对calibration_prebuy_filter、签名、calibration_receipt和实际代币数量，首次导出检查execution-audit.json.calibration。没有真实回执时不能宣布实盘校准完成。
+
+
 ## 最新：迁移后30–120分钟过滤（selectionVersion=7）
 
 默认纸面过滤新增：已验证的Pump毕业迁移AGE在[30分钟,120分钟)时跳过买入，恰好30分钟拦截，恰好120分钟不拦截。AGE只接受since_pump_graduation_migration定义、pump_migrate_processed来源且状态为observed_processed_not_finalized的有效非负migrationAgeMs；不使用代币创建时间。原Age模块仍校验池/币匹配、证据冲突及证据是否在候选前已知。
