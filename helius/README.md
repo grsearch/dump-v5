@@ -1,5 +1,18 @@
 # Helius PumpSwap 全网砸单版
 
+## 最新：连续卖出压力过滤（selectionVersion=5）
+
+默认 PAPER_PREBUY_FILTER=true 且 DRY_RUN=true 时，新增直接跳过条件：触发砸单之前的成交序列已连续至少3笔卖出，且前5秒卖出SOL金额严格大于买入SOL金额。两项必须同时成立；触发砸单本身不计入，连续3笔不要求同一卖家，也不限定都在5秒内。金额相等或只有2笔连续卖出不触发。
+
+历史完整且字段有效才判断该条件；历史未知沿用原处理，不伪造危险命中。命中在持仓、准备名额和冷却消耗前拦截，原因记录为 consecutivePressure / consecutive_sells_3_and_net_sell_5s。沿用内存历史计算，不新增RPC、等待窗口或数据源。
+
+后台仍保留所有可观察候选的原策略代理结果；prebuyLegacy保留原三项组合，avoidConsecutivePressure单独观察新条件，prebuyCombined及未知处理分组应用四项规则。观察仍受既有容量、行情连续性和期限限制，缺失结果保持未知。这是历史减亏证据支持的纸面防守尝试，不是已验证的盈利策略，不接入实盘下单路径。
+
+部署后核对：session.selectionVersion=5，sample.observationVersion=selection-v5，selection.arms含prebuyLegacy及avoidConsecutivePressure；命中时paper_prebuy_filter应为reject并含consecutivePressure。quality.json的selectionValidation及researchRecovery会保留新旧分组；不修改COS定时器、模型、1 SOL配置或退出参数。没有自然命中不算部署失败。
+
+离线入场回放现在统一使用当前四项过滤；旧归档缺少新特征时按未知跳过，因此不能把新版回放计数直接与旧版报告比较。旧归档原始标签不重写。
+
+
 这是面向全新服务器安装的 v5。行情和交易只连接 Helius；不依赖 Shredstream.com、AllenHark、Birdeye，不使用代币监控列表。默认模拟模式。项目根目录的 `npm start` 和部署服务均指向本版本。另支持 [每天北京时间 07:00 上传 COS 分析归档](COS-UPLOAD.md)，COS 密钥在服务器独立配置，上传服务不参与交易决策。
 
 ## 已实现

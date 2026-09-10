@@ -61,7 +61,7 @@ class Tracker {
     this.write({ type: 'session', schema: 1, runId, at: this.now(), policy: this.policy, policyId: this.policyId,
       drawdownModelStatus: this.drawdownModel.status, modelStatus: this.model.status, riskModelStatus: this.riskModel.status, returnModelStatus: this.returnModel.status,
       noStopRecoveryVersion: this.recovery ? 1 : null, exitComparisonVersion: this.exitComparisons ? 1 : null,
-      exitResearchVersion: 3, stateQuoteVersion: this.stateRecovery ? 1 : null, stateQuoteSchedulingVersion: this.stateRecovery ? 3 : null, selectionVersion: 4,
+      exitResearchVersion: 3, stateQuoteVersion: this.stateRecovery ? 1 : null, stateQuoteSchedulingVersion: this.stateRecovery ? 3 : null, selectionVersion: 5,
       exitVariants: this.exitComparisons ? require('./exit-comparisons').ARMS : [],
       entryResearchVersion: this.entryComparisons ? 1 : null, entryRules: this.entryComparisons ? ENTRY_RULES : null,
       entryVariants: this.entryComparisons ? ENTRY_ARMS : [], entryResearchRequiresKnownPrebuyPass: true,
@@ -131,7 +131,7 @@ class Tracker {
       this.entryComparisons?.add(sample, s, fresh && this.connected && sample.selection.arms.prebuyCombined.status === 'pass', at);
       this.emit({ type: 'sample', id, key, at, source: sample.source, sequence: this.sequence,
         features: snapshot, prediction: sample.prediction, objectivePredictions: sample.objectivePredictions, experiments: sample.experiments,
-        selection: sample.selection, runStartedAt: this.runStartedAt, observationVersion: 'selection-v4',
+        selection: sample.selection, runStartedAt: this.runStartedAt, observationVersion: 'selection-v5',
         age: this.ages.snapshot(s, at), decisionFresh: fresh, policy: this.policy });
       if (!fresh || !this.connected) this.finishIncomplete(sample, !fresh ? 'stale_candidate' : 'stream_not_continuous', at);
       else if (this.active.size >= this.c.maxActive) this.finishIncomplete(sample, 'active_capacity', at);
@@ -150,7 +150,7 @@ class Tracker {
     this.emit({ type: 'outcome', id: sample.id, key: sample.key, target, at, ...fields });
     if (target === 'strategy_proxy') this.emit({ type: 'execution_comparison', comparisonVersion: 1,
       id: sample.id, key: sample.key, at, experiments: sample.experiments, prediction: sample.prediction, objectivePredictions: sample.objectivePredictions,
-      executionPolicy: this.policy, selection: sample.selection, runStartedAt: this.runStartedAt, observationVersion: 'selection-v4', ...fields });
+      executionPolicy: this.policy, selection: sample.selection, runStartedAt: this.runStartedAt, observationVersion: 'selection-v5', ...fields });
   }
   finishIncomplete(sample, reason, at) {
     if (['pool_observation_gap', 'stale_source_observation', 'unquotable_exit', 'stream_disconnected', 'global_delivery_gap', 'main_queue_overflow'].includes(reason)) {

@@ -5,11 +5,9 @@ const { buyQuote, liquidationDetails } = require('../src/shadow/tracker');
 const { entryAudit } = require('../src/reporting/entry-audit');
 const { digest } = require('../src/reporting/archive');
 const { checkInspectionBytes } = require('./inspect-export');
+const { selection } = require('../src/shadow/selection');
 function eligible(s) {
-  const f = s.features, v = f?.values;
-  return s.decisionFresh === true && f?.ready === true && Number.isFinite(v.buyFraction15) && v.buyFraction15 >= .2 && v.buyFraction15 <= 1
-    && v.buySol15 >= 0 && v.sellSol15 >= 0 && v.buySol15 + v.sellSol15 > 0
-    && v.trades60 >= 2 && Number.isFinite(v.return60Pct) && v.return60Pct >= -20 && Number.isFinite(v.sellSol) && v.sellSol < 40;
+  return selection({}, {}, s.decisionFresh === true, null, s.features).arms.prebuyCombined.status === 'pass';
 }
 async function replay(directory, output, windowStart, windowEnd) {
   const summary = JSON.parse(fs.readFileSync(path.join(directory, 'summary.json'))), file = path.join(directory, 'analysis.jsonl.gz');

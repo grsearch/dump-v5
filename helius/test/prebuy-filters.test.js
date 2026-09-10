@@ -3,7 +3,7 @@ const test = require('node:test'), assert = require('node:assert/strict');
 const { selection } = require('../src/shadow/selection');
 const { selectionValidation } = require('../src/reporting/selection-validation');
 const { recoveryAudit } = require('../src/reporting/recovery-audit');
-const snapshot = () => ({ ready: true, values: { buyFraction15: .2, buySol15: 2, sellSol15: 8, return60Pct: -20, trades60: 10, sellSol: 39.99 } });
+const snapshot = () => ({ ready: true, values: { buyFraction15: .2, buySol15: 2, sellSol15: 8, return60Pct: -20, trades60: 10, sellSol: 39.99, consecutiveSells: 2, buySol5: 1, sellSol5: 2 } });
 const select = s => selection({}, {}, true, null, s);
 test('prebuy filters use fixed boundaries and do not depend on models', () => {
   const s = snapshot(), before = JSON.stringify(s);
@@ -61,4 +61,38 @@ test('strict history comparison exports the missed outcome without turning missi
   assert.equal(g.arms.prebuyRequireKnown.pairedDifferenceSol, .4);
   assert.equal(g.arms.prebuyRequireKnown.selectedNetSol, null);
   assert.equal(g.reboundBySelection.prebuyUnknownOnly.unknown, 1);
+});
+
+test('consecutive sell pressure rejects only the joint condition and preserves legacy observation', () => {
+  const s = snapshot(); s.values.consecutiveSells = 3;
+  let result = select(s);
+  assert.equal(result.version, 5);
+  assert.equal(result.arms.prebuyCombined.status, 'reject');
+  assert.equal(result.arms.prebuyLegacy.status, 'pass');
+  assert.equal(result.arms.prebuyCombined.rejected[0].check, 'consecutivePressure');
+  s.values.sellSol5 = s.values.buySol5;
+  assert.equal(select(s).arms.prebuyCombined.status, 'pass');
+  s.values.sellSol5 = 2; s.values.consecutiveSells = 2;
+  assert.equal(select(s).arms.prebuyCombined.status, 'pass');
+});
+test('missing or invalid pressure history stays unknown, never a dangerous zero', () => {
+  for (const values of [{ consecutiveSells: undefined }, { consecutiveSells: -1 }, { consecutiveSells: 3.5 }, { buySol5: NaN }, { sellSol5: -1 }]) {
+    const s = snapshot(); Object.assign(s.values, values);
+    assert.equal(select(s).arms.prebuyCombined.status, 'unknown');
+    assert.equal(select(s).arms.prebuyAllowUnknown.status, 'pass');
+    s.values.sellSol = 40;
+    assert.equal(select(s).arms.prebuyCombined.status, 'reject');
+  }
+});
+test('blocked pressure samples retain counterfactual losses in export and replay uses current rules', () => {
+  const { eligible } = require('../scripts/replay-entry-research');
+  const s = snapshot(); s.values.consecutiveSells = 3;
+  assert.equal(eligible({ decisionFresh: true, features: s }), false);
+  const sample = { id: 'pressure', at: 1000, runId: 'r', policyId: 'p', selection: select(s) };
+  const outcomes = new Map([['pressure:strategy_proxy', { at: 2000, status: 'observed_proxy', policyId: 'p', netPnlSol: -.4, entryCostSol: 1 }]]);
+  const g = selectionValidation(new Map([['pressure', sample]]), outcomes, { start: new Date(0).toISOString(), endExclusive: new Date(3000).toISOString() }).groups[0];
+  assert.equal(g.arms.prebuyLegacy.selectedNetSol, -.4);
+  assert.equal(g.arms.prebuyCombined.pairedDifferenceSol, .4);
+  s.values.consecutiveSells = 2;
+  assert.equal(eligible({ decisionFresh: true, features: s }), true);
 });

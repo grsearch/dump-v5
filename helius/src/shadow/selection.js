@@ -1,7 +1,8 @@
 'use strict';
 const crypto = require('node:crypto');
-// Predeclared research thresholds, never optimized on the evaluation window.
-const RULES = Object.freeze({ version: 4, minReboundProbability: 0.6, highReboundProbability: 0.8, maxDrawdownProbability: 0.25, maxLoss25Probability: 0.25, minExpectedNetReturn: 0,
+// Fixed rules; version 5 adds a retrospective loss-reduction hypothesis, not a validated profit claim.
+const RULES = Object.freeze({ version: 5, minReboundProbability: 0.6, highReboundProbability: 0.8, maxDrawdownProbability: 0.25, maxLoss25Probability: 0.25, minExpectedNetReturn: 0,
+  rejectConsecutiveSellsAtLeast: 3, rejectNetSellWindowSeconds: 5,
   unknownHistoryComparison: 'allow_vs_reject_with_unknown_subgroup',
   minPriorBuyFraction15: 0.2, minPriorReturn60Pct: -20, maxDumpSolExclusive: 40 });
 const ID = crypto.createHash('sha256').update(JSON.stringify(RULES)).digest('hex').slice(0, 16);
@@ -10,6 +11,8 @@ function selection(experiments, predictions, fresh, rebound, snapshot) {
   const flowKnown = snapshot?.ready && Number.isFinite(v.buyFraction15) && v.buyFraction15 >= 0 && v.buyFraction15 <= 1
     && Number.isFinite(v.buySol15) && Number.isFinite(v.sellSol15) && v.buySol15 >= 0 && v.sellSol15 >= 0 && v.buySol15 + v.sellSol15 > 0;
   const returnKnown = snapshot?.ready && Number.isFinite(v.return60Pct) && v.trades60 >= 2;
+  const pressureKnown = snapshot?.ready && Number.isInteger(v.consecutiveSells) && v.consecutiveSells >= 0
+    && Number.isFinite(v.buySol5) && v.buySol5 >= 0 && Number.isFinite(v.sellSol5) && v.sellSol5 >= 0;
   const risk = predictions?.loss25, net = predictions?.netReturn;
   const riskKnown = risk?.status === 'experimental_calibrated_model' && risk.target === 'loss_25' && risk.modelId
     && Number.isFinite(risk.probability) && risk.probability >= 0 && risk.probability <= 1;
@@ -19,6 +22,8 @@ function selection(experiments, predictions, fresh, rebound, snapshot) {
     && Number.isFinite(p.probability) && p.probability >= 0 && p.probability <= 1;
   const reboundKnown = knownProbability(rebound, 'rebound_60s'), drawdownKnown = knownProbability(drawdown, 'drawdown_60s_25');
   const checks = {
+    consecutivePressure: { pass: pressureKnown ? !(v.consecutiveSells >= RULES.rejectConsecutiveSellsAtLeast && v.sellSol5 > v.buySol5) : null,
+      reason: pressureKnown ? 'consecutive_sells_3_and_net_sell_5s' : 'unavailable_consecutive_sell_pressure' },
     priorBuy: { pass: flowKnown ? v.buyFraction15 >= RULES.minPriorBuyFraction15 : null, reason: flowKnown ? 'prior_buy_fraction_15s_minimum' : 'unavailable_prior_buy_flow' },
     priorReturn: { pass: returnKnown ? v.return60Pct >= RULES.minPriorReturn60Pct : null, reason: returnKnown ? 'prior_return_60s_minimum' : 'unavailable_prior_return' },
     dumpSize: { pass: Number.isFinite(v.sellSol) && v.sellSol >= 0 ? v.sellSol < RULES.maxDumpSolExclusive : null, reason: 'dump_size_below_40_sol' },
@@ -33,7 +38,9 @@ function selection(experiments, predictions, fresh, rebound, snapshot) {
   };
   const arms = {};
   for (const [name, keys] of Object.entries({ avoidWeakBuy: ['fresh', 'priorBuy'], avoidPriorFall: ['fresh', 'priorReturn'], avoidLargeDump: ['fresh', 'dumpSize'],
-    prebuyCombined: ['fresh', 'priorBuy', 'priorReturn', 'dumpSize'],
+    prebuyLegacy: ['fresh', 'priorBuy', 'priorReturn', 'dumpSize'],
+    avoidConsecutivePressure: ['fresh', 'consecutivePressure'],
+    prebuyCombined: ['fresh', 'priorBuy', 'priorReturn', 'dumpSize', 'consecutivePressure'],
     joint: ['fresh', 'rebound', 'drawdown'], highRebound: ['fresh', 'highRebound'], baseline: ['fresh'], market: ['fresh', 'size', 'flow'], risk: ['fresh', 'risk'], net: ['fresh', 'net'], combined: ['fresh', 'size', 'flow', 'risk', 'net'] })) {
     const rejected = keys.filter(k => checks[k].pass === false), unknown = keys.filter(k => checks[k].pass !== true && checks[k].pass !== false);
     arms[name] = { status: rejected.length ? 'reject' : unknown.length ? 'unknown' : 'pass',
@@ -45,7 +52,7 @@ function selection(experiments, predictions, fresh, rebound, snapshot) {
     rejected: prebuy.status === 'unknown' ? [...prebuy.unknown.map(x => ({ ...x, reason: 'history_required:' + x.reason }))] : prebuy.rejected };
   arms.prebuyUnknownOnly = { ...prebuy, status: prebuy.status === 'unknown' ? 'pass' : 'reject',
     rejected: prebuy.status === 'pass' ? [{ check: 'history', reason: 'known_history_not_in_unknown_subgroup' }] : prebuy.rejected };
-  return { version: 4, selectionId: ID, rules: RULES, marketExperimentId: experiments.experimentId,
+  return { version: RULES.version, selectionId: ID, rules: RULES, marketExperimentId: experiments.experimentId,
     modelIds: { rebound: rebound?.modelId || null, drawdown: drawdown?.modelId || null, risk: risk?.modelId || null, net: net?.modelId || null }, scope: 'observation_only_candidate_filter', checks, arms };
 }
 module.exports = { selection };
