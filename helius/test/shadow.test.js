@@ -34,6 +34,7 @@ function warm(t) { for (let at = 0; at < 60000; at += 5000) t.onSwap(swap(at), f
 test('independent entry research preserves original labels and records buyer identity only in confirmation window', () => {
   const enabled = collector({ entryComparisons: true }), disabled = collector({ entryComparisons: false });
   for (const { tracker } of [enabled, disabled]) {
+    tracker.ages.created({ source: 'pump_migrate_processed', pool: 'pool', mint: 'mint', createdAt: 1, migrationAt: 1, observedAt: 1 });
     warm(tracker); tracker.onSwap(swap(59000, { side: 'sell' }), false, false); tracker.onSwap(swap(60000), true, true);
     tracker.onSwap(swap(60500), false, true);
     tracker.onSwap(swap(61000, { postQuote: '104000000000', user: 'second-buyer' }), false, true);
@@ -87,7 +88,7 @@ test('sample is written before outcome, with no fabricated probability when no m
   const sample = records.find(r => r.type === 'sample');
   assert.ok(sample.features.ready); assert.equal(sample.prediction.status, 'no_model'); assert.equal(sample.prediction.probability, null);
   assert.equal(sample.selection.arms.risk.status, 'unknown');
-  assert.equal(sample.observationVersion, 'selection-v6');
+  assert.equal(sample.observationVersion, 'selection-v7');
   assert.equal(records.filter(r => r.type === 'outcome').length, 0);
   assert.ok(sample.features.lastHistorySequence < sample.sequence);
 });

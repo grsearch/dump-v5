@@ -7,7 +7,7 @@ const { digest } = require('../src/reporting/archive');
 const { checkInspectionBytes } = require('./inspect-export');
 const { selection } = require('../src/shadow/selection');
 function eligible(s) {
-  return selection({}, {}, s.decisionFresh === true, null, s.features).arms.prebuyCombined.status === 'pass';
+  return selection({}, {}, s.decisionFresh === true, null, s.features, s.age).arms.prebuyCombined.status === 'pass';
 }
 async function replay(directory, output, windowStart, windowEnd) {
   const summary = JSON.parse(fs.readFileSync(path.join(directory, 'summary.json'))), file = path.join(directory, 'analysis.jsonl.gz');

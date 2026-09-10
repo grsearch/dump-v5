@@ -49,6 +49,7 @@ test('archive replay validates source hash, admits only prebuy known pass, and n
     pool: 'pool', mint: 'mint', price: quote / 1e11, postBase: '100000000000', postQuote: String(quote * 1e9), virtual: '0', side });
   write(path.join(f.env.SHADOW_DIRECTORY, 'samples-entry-replay.jsonl'), [swap(0, 100, 'sell'),
     { type: 'sample', runId: 'r', id: 's', key: 'k0', at, policy: p, policyId: 'policy', source: { pool: 'pool', mint: 'mint' }, decisionFresh: true,
+      age: { definition: 'since_pump_graduation_migration', source: 'pump_migrate_processed', status: 'observed_processed_not_finalized', migrationAgeMs: 1000 },
       features: { ready: true, values: { buyFraction15: .5, buySol15: 1, sellSol15: 1, trades60: 10, return60Pct: 0, sellSol: 8, buyFraction5: .5, consecutiveSells: 0, buySol5: 1, sellSol5: 1 } } },
     swap(100, 100), swap(500, 103), swap(1000, 104), swap(1500, 140), swap(2000, 135), swap(3500, 135)]);
   const a = await buildArchive({ c: f.c, outputDir: f.env.COS_EXPORT_DIRECTORY, end: f.end });

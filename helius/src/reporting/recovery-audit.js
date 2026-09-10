@@ -6,7 +6,7 @@ function recoveryAudit(records, outcomes) {
     const meta = { runId: r.runId, policyId: r.policyId, type: r.type, variant: r.variant,
       recoveryVersion: r.recoveryVersion, selectionId: r.selection?.selectionId ?? null, modelIds: r.selection?.modelIds ?? null };
     const key = JSON.stringify(meta);
-    const names = ['all', 'joint', 'highRebound', ...['prebuyBeforeBuy80', 'avoidBuyBurst', 'prebuyLegacy', 'avoidConsecutivePressure', 'avoidWeakBuy', 'avoidPriorFall', 'avoidLargeDump', 'prebuyCombined', 'prebuyAllowUnknown', 'prebuyRequireKnown', 'prebuyUnknownOnly'].filter(n => r.selection?.arms?.[n])];
+    const names = ['all', 'joint', 'highRebound', ...['prebuyBeforeAge', 'avoidMigrationAge', 'prebuyBeforeBuy80', 'avoidBuyBurst', 'prebuyLegacy', 'avoidConsecutivePressure', 'avoidWeakBuy', 'avoidPriorFall', 'avoidLargeDump', 'prebuyCombined', 'prebuyAllowUnknown', 'prebuyRequireKnown', 'prebuyUnknownOnly'].filter(n => r.selection?.arms?.[n])];
     if (!groups.has(key)) groups.set(key, { ...meta });
     for (const name of names) {
       groups.get(key)[name] ||= {};

@@ -1,6 +1,17 @@
 # Helius PumpSwap 全网砸单版
 
-## 最新：前5秒买入占比过滤（selectionVersion=6）
+## 最新：迁移后30–120分钟过滤（selectionVersion=7）
+
+默认纸面过滤新增：已验证的Pump毕业迁移AGE在[30分钟,120分钟)时跳过买入，恰好30分钟拦截，恰好120分钟不拦截。AGE只接受since_pump_graduation_migration定义、pump_migrate_processed来源且状态为observed_processed_not_finalized的有效非负migrationAgeMs；不使用代币创建时间。原Age模块仍校验池/币匹配、证据冲突及证据是否在候选前已知。
+
+AGE未知不算危险命中，沿用纸面允许unknown的处理；其他已知风险仍可拒绝。此条件是多个历史时段的减亏尝试，匹配样本小且有方向翻转，不代表迁移AGE具有已证明的因果风险。被过滤候选继续原后台观察，不增加RPC或等待。
+
+核对session.selectionVersion=7、sample.observationVersion=selection-v7，拒绝check=migrationAge、reason=migration_age_30_to_120_minutes。prebuyBeforeAge保留上一版五项规则，avoidMigrationAge单独观察AGE，prebuyCombined改为六项规则；质量与恢复报告保留新旧组。原1 SOL、20%止盈、25%止损、模型及COS定时器保持不变。
+
+独立入场确认研究及离线回放要求当前六项明确通过；AGE未知因此会跳过该研究，但不因此拒绝纸面买入。旧归档缺少可验证迁移证据时记未知，不用创建时间补齐。按规则版本和进程分开分析。
+
+
+## 历史更新：前5秒买入占比过滤（selectionVersion=6）
 
 默认纸面买前过滤新增：触发砸单之前5秒，买入SOL金额 /（买入SOL金额＋卖出SOL金额）≥80%就跳过。恰好80%也拦截；不包含触发砸单本身，不按笔数或地址数计算。需要完整历史、有效字段及正成交总额，缺失/零成交按unknown沿用原处理，不伪造危险命中。
 

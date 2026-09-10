@@ -4,7 +4,8 @@ const { selection } = require('../src/shadow/selection');
 const { selectionValidation } = require('../src/reporting/selection-validation');
 const { recoveryAudit } = require('../src/reporting/recovery-audit');
 const snapshot = () => ({ ready: true, values: { buyFraction15: .2, buySol15: 2, sellSol15: 8, return60Pct: -20, trades60: 10, sellSol: 39.99, buyFraction5: 1 / 3, consecutiveSells: 2, buySol5: 1, sellSol5: 2 } });
-const select = s => selection({}, {}, true, null, s);
+const safeAge = { definition: 'since_pump_graduation_migration', source: 'pump_migrate_processed', status: 'observed_processed_not_finalized', migrationAgeMs: 1000 };
+const select = s => selection({}, {}, true, null, s, safeAge);
 test('prebuy filters use fixed boundaries and do not depend on models', () => {
   const s = snapshot(), before = JSON.stringify(s);
   assert.equal(select(s).arms.prebuyCombined.status, 'pass');
@@ -66,7 +67,7 @@ test('strict history comparison exports the missed outcome without turning missi
 test('consecutive sell pressure rejects only the joint condition and preserves legacy observation', () => {
   const s = snapshot(); s.values.consecutiveSells = 3;
   let result = select(s);
-  assert.equal(result.version, 6);
+  assert.equal(result.version, 7);
   assert.equal(result.arms.prebuyCombined.status, 'reject');
   assert.equal(result.arms.prebuyLegacy.status, 'pass');
   assert.equal(result.arms.prebuyCombined.rejected[0].check, 'consecutivePressure');
@@ -87,14 +88,14 @@ test('missing or invalid pressure history stays unknown, never a dangerous zero'
 test('blocked pressure samples retain counterfactual losses in export and replay uses current rules', () => {
   const { eligible } = require('../scripts/replay-entry-research');
   const s = snapshot(); s.values.consecutiveSells = 3;
-  assert.equal(eligible({ decisionFresh: true, features: s }), false);
+  assert.equal(eligible({ decisionFresh: true, features: s, age: safeAge }), false);
   const sample = { id: 'pressure', at: 1000, runId: 'r', policyId: 'p', selection: select(s) };
   const outcomes = new Map([['pressure:strategy_proxy', { at: 2000, status: 'observed_proxy', policyId: 'p', netPnlSol: -.4, entryCostSol: 1 }]]);
   const g = selectionValidation(new Map([['pressure', sample]]), outcomes, { start: new Date(0).toISOString(), endExclusive: new Date(3000).toISOString() }).groups[0];
   assert.equal(g.arms.prebuyLegacy.selectedNetSol, -.4);
   assert.equal(g.arms.prebuyCombined.pairedDifferenceSol, .4);
   s.values.consecutiveSells = 2;
-  assert.equal(eligible({ decisionFresh: true, features: s }), true);
+  assert.equal(eligible({ decisionFresh: true, features: s, age: safeAge }), true);
 });
 
 test('buy burst rejects the exact 80 percent boundary and preserves previous combined selection', () => {
@@ -104,7 +105,7 @@ test('buy burst rejects the exact 80 percent boundary and preserves previous com
   assert.equal(result.arms.prebuyCombined.status, 'reject');
   assert.equal(result.arms.prebuyBeforeBuy80.status, 'pass');
   assert.equal(result.arms.prebuyCombined.rejected[0].check, 'priorBuyBurst');
-  assert.equal(eligible({ decisionFresh: true, features: s }), false);
+  assert.equal(eligible({ decisionFresh: true, features: s, age: safeAge }), false);
   Object.assign(s.values, { buySol5: 7.999, sellSol5: 2.001, buyFraction5: .7999 });
   assert.equal(select(s).arms.prebuyCombined.status, 'pass');
   Object.assign(s.values, { buySol5: 10, sellSol5: 0, buyFraction5: 1 });
@@ -130,4 +131,29 @@ test('buy burst counterfactual return is retained in selection and state recover
   assert.equal(g.arms.prebuyCombined.pairedDifferenceSol, .3);
   const audit = recoveryAudit(new Map([['burst', { ...sample, type: 'state_exit_recovery', variant: 'baseline', phase: 'finished', status: 'unknown' }]]), new Map());
   assert.equal(audit.groups[0].prebuyBeforeBuy80.unknown, 1);
+});
+
+test('migration age uses authenticated graduation evidence with inclusive 30 and exclusive 120 minute boundaries', () => {
+  for (const [ms, status] of [[1799999, 'pass'], [1800000, 'reject'], [7199999, 'reject'], [7200000, 'pass']]) {
+    const age = { ...safeAge, migrationAgeMs: ms };
+    const result = selection({}, {}, true, null, snapshot(), age);
+    assert.equal(result.arms.prebuyCombined.status, status);
+    assert.equal(result.arms.prebuyBeforeAge.status, 'pass');
+  }
+  for (const age of [undefined, { ...safeAge, migrationAgeMs: null }, { ...safeAge, migrationAgeMs: -1 }, { ...safeAge, status: 'unknown' }, { ...safeAge, source: 'token_creation' }, { ...safeAge, definition: 'since_token_creation' }]) {
+    const result = selection({}, {}, true, null, snapshot(), age);
+    assert.equal(result.arms.prebuyCombined.status, 'unknown');
+    assert.equal(result.arms.prebuyAllowUnknown.status, 'pass');
+  }
+});
+test('age rejection retains previous selection outcomes and offline replay agrees', () => {
+  const age = { ...safeAge, migrationAgeMs: 3600000 }, features = snapshot();
+  const selected = selection({}, {}, true, null, features, age);
+  assert.equal(selected.arms.prebuyCombined.rejected[0].check, 'migrationAge');
+  assert.equal(require('../scripts/replay-entry-research').eligible({ decisionFresh: true, features, age }), false);
+  const sample = { id: 'age', at: 1000, runId: 'r', policyId: 'p', selection: selected };
+  const outcomes = new Map([['age:strategy_proxy', { at: 2000, status: 'observed_proxy', policyId: 'p', netPnlSol: -.3, entryCostSol: 1 }]]);
+  const report = selectionValidation(new Map([['age', sample]]), outcomes, { start: new Date(0).toISOString(), endExclusive: new Date(3000).toISOString() });
+  assert.equal(report.groups[0].arms.prebuyBeforeAge.selectedNetSol, -.3);
+  assert.equal(report.groups[0].arms.prebuyCombined.pairedDifferenceSol, .3);
 });

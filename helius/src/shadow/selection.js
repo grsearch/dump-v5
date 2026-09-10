@@ -1,13 +1,13 @@
 'use strict';
 const crypto = require('node:crypto');
 // Fixed retrospective loss-reduction hypotheses, not a validated profit claim.
-const RULES = Object.freeze({ version: 6, minReboundProbability: 0.6, highReboundProbability: 0.8, maxDrawdownProbability: 0.25, maxLoss25Probability: 0.25, minExpectedNetReturn: 0,
-  maxPriorBuyFraction5Exclusive: 0.8,
+const RULES = Object.freeze({ version: 7, minReboundProbability: 0.6, highReboundProbability: 0.8, maxDrawdownProbability: 0.25, maxLoss25Probability: 0.25, minExpectedNetReturn: 0,
+  maxPriorBuyFraction5Exclusive: 0.8, rejectMigrationAgeMinMs: 1800000, rejectMigrationAgeMaxExclusiveMs: 7200000,
   rejectConsecutiveSellsAtLeast: 3, rejectNetSellWindowSeconds: 5,
   unknownHistoryComparison: 'allow_vs_reject_with_unknown_subgroup',
   minPriorBuyFraction15: 0.2, minPriorReturn60Pct: -20, maxDumpSolExclusive: 40 });
 const ID = crypto.createHash('sha256').update(JSON.stringify(RULES)).digest('hex').slice(0, 16);
-function selection(experiments, predictions, fresh, rebound, snapshot) {
+function selection(experiments, predictions, fresh, rebound, snapshot, age) {
   const v = snapshot?.values || {};
   const flowKnown = snapshot?.ready && Number.isFinite(v.buyFraction15) && v.buyFraction15 >= 0 && v.buyFraction15 <= 1
     && Number.isFinite(v.buySol15) && Number.isFinite(v.sellSol15) && v.buySol15 >= 0 && v.sellSol15 >= 0 && v.buySol15 + v.sellSol15 > 0;
@@ -24,7 +24,11 @@ function selection(experiments, predictions, fresh, rebound, snapshot) {
   const knownProbability = (p, target) => p?.status === 'experimental_calibrated_model' && p.target === target && !!p.modelId
     && Number.isFinite(p.probability) && p.probability >= 0 && p.probability <= 1;
   const reboundKnown = knownProbability(rebound, 'rebound_60s'), drawdownKnown = knownProbability(drawdown, 'drawdown_60s_25');
+  const ageKnown = age?.definition === 'since_pump_graduation_migration' && age.source === 'pump_migrate_processed'
+    && age.status === 'observed_processed_not_finalized' && Number.isFinite(age.migrationAgeMs) && age.migrationAgeMs >= 0;
   const checks = {
+    migrationAge: { pass: ageKnown ? !(age.migrationAgeMs >= RULES.rejectMigrationAgeMinMs && age.migrationAgeMs < RULES.rejectMigrationAgeMaxExclusiveMs) : null,
+      reason: ageKnown ? 'migration_age_30_to_120_minutes' : 'unavailable_verified_migration_age' },
     priorBuyBurst: { pass: buy5Known ? v.buyFraction5 < RULES.maxPriorBuyFraction5Exclusive : null,
       reason: buy5Known ? 'prior_buy_fraction_5s_at_least_80pct' : 'unavailable_prior_buy_flow_5s' },
     consecutivePressure: { pass: pressureKnown ? !(v.consecutiveSells >= RULES.rejectConsecutiveSellsAtLeast && v.sellSol5 > v.buySol5) : null,
@@ -47,7 +51,9 @@ function selection(experiments, predictions, fresh, rebound, snapshot) {
     avoidConsecutivePressure: ['fresh', 'consecutivePressure'],
     prebuyBeforeBuy80: ['fresh', 'priorBuy', 'priorReturn', 'dumpSize', 'consecutivePressure'],
     avoidBuyBurst: ['fresh', 'priorBuyBurst'],
-    prebuyCombined: ['fresh', 'priorBuy', 'priorReturn', 'dumpSize', 'consecutivePressure', 'priorBuyBurst'],
+    prebuyBeforeAge: ['fresh', 'priorBuy', 'priorReturn', 'dumpSize', 'consecutivePressure', 'priorBuyBurst'],
+    avoidMigrationAge: ['fresh', 'migrationAge'],
+    prebuyCombined: ['fresh', 'priorBuy', 'priorReturn', 'dumpSize', 'consecutivePressure', 'priorBuyBurst', 'migrationAge'],
     joint: ['fresh', 'rebound', 'drawdown'], highRebound: ['fresh', 'highRebound'], baseline: ['fresh'], market: ['fresh', 'size', 'flow'], risk: ['fresh', 'risk'], net: ['fresh', 'net'], combined: ['fresh', 'size', 'flow', 'risk', 'net'] })) {
     const rejected = keys.filter(k => checks[k].pass === false), unknown = keys.filter(k => checks[k].pass !== true && checks[k].pass !== false);
     arms[name] = { status: rejected.length ? 'reject' : unknown.length ? 'unknown' : 'pass',
