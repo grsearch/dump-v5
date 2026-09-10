@@ -1,12 +1,13 @@
 'use strict';
 const { Connection, PublicKey, Keypair, TransactionMessage, VersionedTransaction, ComputeBudgetProgram, SystemProgram } = require('@solana/web3.js');
-const { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, MintLayout, unpackAccount, getAssociatedTokenAddressSync,
+const { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, unpackAccount, getAssociatedTokenAddressSync,
   createAssociatedTokenAccountIdempotentInstruction, createCloseAccountInstruction } = require('@solana/spl-token');
 const { PUMP_AMM_SDK, GLOBAL_CONFIG_PDA, PUMP_AMM_FEE_CONFIG_PDA } = require('@pump-fun/pump-swap-sdk');
 const BN = require('bn.js');
 const bs58 = require('bs58').default;
 const { performance } = require('node:perf_hooks');
 const { PUMP, WSOL } = require('./config');
+const { executionAccount } = require('./execution-extensions');
 
 const TIP = new PublicKey('4ACfpUFoaSD9bfPdeu6DBt89gB6ENTeHBXCAi87NhDEE');
 function buyQuoteLamports(c) {
@@ -57,18 +58,22 @@ class Executor {
       new PublicKey(swap.baseVault), new PublicKey(swap.quoteVault), userBaseTokenAccount, userQuoteTokenAccount];
     // Addresses come from the authenticated swap: one round trip replaces SDK's three sequential reads.
     const response = await require('./account-read').readAccounts(this.rpc, keys, { ...swap, isEntry: side === 'buy' }, this.c,
-      (type, record) => this.store?.log(type, record));
+      (type, record) => this.store?.log(type, { ...record, side, sourceSignature: swap.signature, pool: swap.pool, mint: swap.mint }));
     const [poolAccountInfo, globalInfo, feeInfo, mintInfo, b, q, userBaseAccountInfo, userQuoteAccountInfo] = response.value;
     if (!poolAccountInfo?.owner.equals(new PublicKey(PUMP)) || !globalInfo || !feeInfo || !mintInfo || !b || !q) throw new Error('Pool/config accounts unavailable');
     const pool = PUMP_AMM_SDK.decodePool(poolAccountInfo);
     if (!pool.baseMint.equals(baseMint) || pool.quoteMint.toBase58() !== WSOL || pool.poolBaseTokenAccount.toBase58() !== swap.baseVault || pool.poolQuoteTokenAccount.toBase58() !== swap.quoteVault) throw new Error('Pool identity mismatch');
     if (!mintInfo.owner.equals(baseTokenProgram)) throw new Error('Mint token program mismatch');
-    // Transfer fees/hooks need extension-specific quoting and remaining accounts; refuse rather than underquote.
-    if (mintInfo.data.length !== MintLayout.span) throw new Error('Token extensions are not supported by this execution path');
-    const baseMintAccount = MintLayout.decode(mintInfo.data);
-    if (baseMintAccount.freezeAuthorityOption !== 0) throw new Error('Mint has freeze authority');
+    const inspect = (info, role, kind, address, program) => executionAccount(info, role, kind, address, program,
+      d => this.store?.log('execution_token_extensions', { ...d, side, sourceSignature: swap.signature, pool: swap.pool, mint: swap.mint }));
+    const baseMintAccount = inspect(mintInfo, 'baseMint', 'mint', baseMint, baseTokenProgram);
+    inspect(b, 'baseVault', 'account', keys[4], baseTokenProgram);
+    inspect(q, 'quoteVault', 'account', keys[5], TOKEN_PROGRAM_ID);
+    if (userBaseAccountInfo) inspect(userBaseAccountInfo, 'userBase', 'account', userBaseTokenAccount, baseTokenProgram);
+    if (userQuoteAccountInfo) inspect(userQuoteAccountInfo, 'userQuote', 'account', userQuoteTokenAccount, TOKEN_PROGRAM_ID);
     const base = unpackAccount(keys[4], b, baseTokenProgram), quote = unpackAccount(keys[5], q, TOKEN_PROGRAM_ID);
     if (!base.mint.equals(baseMint) || quote.mint.toBase58() !== WSOL || !base.owner.equals(poolKey) || !quote.owner.equals(poolKey)) throw new Error('Invalid pool vault');
+    if (!base.isInitialized || !quote.isInitialized || base.isFrozen || quote.isFrozen) throw new Error('Invalid vault state');
     if (base.amount === 0n || quote.amount === 0n) throw new Error('Empty pool');
     return { poolKey, poolAccountInfo, pool, globalConfig: PUMP_AMM_SDK.decodeGlobalConfig(globalInfo),
       feeConfig: PUMP_AMM_SDK.decodeFeeConfig(feeInfo), baseMint, baseMintAccount,
@@ -83,7 +88,7 @@ class Executor {
       !this.blockhash || Date.now() - this.blockhash.at > 25000 ? this.refreshBlockhash() : Promise.resolve()]);
     const stateMs = performance.now() - t0;
     const account = state.userBaseAccountInfo ? unpackAccount(state.userBaseTokenAccount, state.userBaseAccountInfo, state.baseTokenProgram) : null;
-    if (account && (!account.owner.equals(this.wallet.publicKey) || account.isFrozen)) throw new Error('Invalid wallet token account');
+    if (account && (!account.owner.equals(this.wallet.publicKey) || !account.mint.equals(state.baseMint) || !account.isInitialized || account.isFrozen)) throw new Error('Invalid wallet token account');
     if (this.c.calibration?.enabled && side === 'buy' && state.userQuoteAccountInfo) throw new Error('Calibration requires no pre-existing WSOL account; use a dedicated wallet');
     if (side === 'buy' && account?.amount > 0n) throw new Error('Wallet already holds this mint; refusing to merge external holdings');
     if (side === 'buy' && Number(state.poolQuoteAmount.toString()) / 1e9 < this.c.minLiquidity) throw new Error('Pool liquidity below threshold');
@@ -139,6 +144,8 @@ class Executor {
     if (item.mint === WSOL || expected.toBase58() !== item.ata || !item.createdByBot) throw new Error('Unmanaged account');
     const info = await this.rpc.getAccountInfo(expected, 'finalized');
     if (!info) return null;
+    executionAccount(info, 'cleanup', 'account', expected, new PublicKey(item.tokenProgram),
+      d => this.store?.log('execution_token_extensions', { ...d, side: 'close', mint: item.mint }));
     const account = unpackAccount(expected, info, new PublicKey(item.tokenProgram));
     if (!account.owner.equals(this.wallet.publicKey) || !account.mint.equals(new PublicKey(item.mint))) throw new Error('Account owner/mint mismatch');
     if (account.amount !== 0n || (account.closeAuthority && !account.closeAuthority.equals(this.wallet.publicKey))) throw new Error('Account not empty or close authority differs');

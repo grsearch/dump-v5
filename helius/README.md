@@ -17,7 +17,7 @@ STATE_FILE=data/calibration.json
 SHADOW_ENABLED=true
 ```
 
-另需配置专用钱包WALLET_PRIVATE_KEY_BS58及现有Helius凭据，密钥不入仓库。不要与其他交易程序共享钱包。已有持仓/待确认交易应使用原模式原账本先完成处理，不能换账本丢掉它们。校准买入拒绝已有WSOL账户，避免外部余额干扰；原实盘执行路径仍拒绝Token扩展币，准备失败必须单独统计，不代表所有候选都能执行。
+另需配置专用钱包WALLET_PRIVATE_KEY_BS58及现有Helius凭据，密钥不入仓库。不要与其他交易程序共享钱包。已有持仓/待确认交易应使用原模式原账本先完成处理，不能换账本丢掉它们。校准买入拒绝已有WSOL账户，避免外部余额干扰；实盘执行路径仅允许通过校验的元数据Mint扩展及ImmutableOwner账户扩展，准备失败必须单独统计，不代表所有候选都能执行。
 
 校准持仓上限由CALIBRATION_MAX_POSITIONS配置（整数1–20，默认20），买币付款上限使用CALIBRATION_SIZE_SOL（上限0.05，交易费/tip及开户押金另计）；SDK滑点余量包含在该上限内，因此实际买入本金可能更小，忽略原POSITION_SIZE_SOL=1及MAX_CONCURRENT_POSITIONS=20。最多20次已签名买入尝试，包括失败和过期未落链，不是保证20笔成功买入；同一未知签名重试不重复记次数。不确定交易先核对，不能重新构建第二笔买单。
 
@@ -238,3 +238,11 @@ Token-2022补报价修复：允许经结构校验的元数据扩展与ImmutableO
 新增 take8_first3s 独立研究组：模拟买入后3秒内价格上涨8%触发止盈，仍等待原退出延迟；超过3秒回到原退出规则。每日COS自动收录，订单参数不变。部署后exitResearchVersion=3、共9个退出对照，详见OBSERVATION.md。
 
 校准持仓配置可直接沿用旧calibration.json，修改上限不会重置batchId、attempts、lossSol或持仓。下调上限不会强卖已有仓位，只限制后续买入。20仓表示最多同时持有20个币，交易构建/发送与待确认核对仍串行；六项过滤、每分钟候选预算、冷却和20次总买入尝试限制继续有效。0.1 SOL是已实现亏损停止入场线，多仓浮亏与退出费用可能使最终亏损超过该值。钱包还需预留交易费、tip和开户押金，不能按余额除以0.05就认定可买满20仓。部署保留.env和账本，建议显式设置CALIBRATION_MAX_POSITIONS=20。
+
+## executionExtensionsVersion=1：Token-2022执行兼容与统计
+
+执行允许Mint的MetadataPointer、TokenMetadata，以及Token账户的ImmutableOwner；同时校验TLV结构、初始化状态、冻结权限和池子/钱包账户身份。买入和卖出都检查Mint、两个池子vault及已有用户账户，关闭账户只允许已管理、余额为零且扩展合规的账户。TransferFee、TransferHook、PermanentDelegate、MemoTransfer和未知扩展继续拒绝，不从拒绝错误推断代币存在恶意。不会增加RPC请求、放宽六项过滤或改变预算。
+
+execution_token_extensions记录version=1、side、sourceSignature、pool、账户role、扩展编号/名称和拒绝原因，不保存元数据正文。execution_account_read_failed/recovered也携带来源信号，可按来源信号+池子去重；旧记录缺少标识时不能重建。execution-audit.json新增executionFunnel：窗口回执按交易签名去重，失败候选按信号去重，扩展类型分组可重叠，不能相加当作完整漏斗。batchSnapshots使用导出时账本全批次计数，不与窗口成交数混比；confirmedBuysInLedger大于attempts标记count_mismatch，需进一步查账，程序不会自动重置或修正额度。
+
+部署保留.env、calibration.json和现有模型。先核对允许/拒绝扩展诊断，再核对真实买卖回执与账户回收；本地真实SDK构建和签名测试不等于链上成交保证。首笔测试按唯一交易签名核对，不能同时把buy_confirmed与calibration_receipt算两笔。

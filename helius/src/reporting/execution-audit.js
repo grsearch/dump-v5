@@ -28,12 +28,15 @@ async function executionAudit(directory) {
   const quality = await require('../../scripts/inspect-export').inspect(directory);
   const start = Date.parse(quality.window.start), end = Date.parse(quality.window.endExclusive);
   const calibrationReceipts = new Map(), calibrationComparisons = new Map();
+  const funnel = new (require('./execution-funnel').ExecutionFunnel)();
   const sells = new Map(), comparisons = new Map(), filters = new Map();
   const input = fs.createReadStream(path.join(directory, 'analysis.jsonl.gz')), unzip = zlib.createGunzip();
   input.on('error', e => unzip.destroy(e)); input.pipe(unzip);
   try {
     for await (const line of readline.createInterface({ input: unzip, crlfDelay: Infinity })) {
       const { dataset, record: r } = JSON.parse(line), at = r.at ?? Date.parse(r.time);
+      if (dataset === 'state_snapshot') funnel.snapshot(r.calibration);
+      if (dataset === 'trading' && at >= start && at < end) funnel.record(r);
       if (dataset === 'trading' && r.type === 'paper_sell' && at >= start && at < end && r.positionId && r.pool) sells.set(`${r.positionId}:${r.pool}`, r);
       if (dataset === 'shadow' && r.type === 'execution_comparison' && at < end) {
         if (r.calibrationRole) calibrationComparisons.set(r.calibrationRole + ':' + r.key, r);
@@ -69,7 +72,7 @@ async function executionAudit(directory) {
     }
     rows.push(row);
   }
-  return { schema: 2, calibration: require('./calibration-audit').calibrationAudit(calibrationReceipts, calibrationComparisons, start, end), window: quality.window, totals, costSummary: costSummary(rows), migrationPipeline: quality.audit.migrationPipeline,
+  return { schema: 2, executionFunnel: funnel.result(), calibration: require('./calibration-audit').calibrationAudit(calibrationReceipts, calibrationComparisons, start, end), window: quality.window, totals, costSummary: costSummary(rows), migrationPipeline: quality.audit.migrationPipeline,
     note: 'Signed accounting bridge under fixed proxy assumptions, not causal attribution or actual fees. Timing term also includes exit-rule and position-size differences. Missing observations remain unknown.', rows };
 }
 function costSummary(rows) {
