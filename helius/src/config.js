@@ -42,7 +42,7 @@ function readConfig(env = process.env) {
     maxImpact: num('MAX_PRICE_IMPACT_PCT', 30, 0, 99),
     minLiquidity: num('MIN_POOL_QUOTE_SOL', 30, 0, 1e9),
     sizeSol: calibration ? num('CALIBRATION_SIZE_SOL', 0.05, 0.001, 0.05) : num('POSITION_SIZE_SOL', 1, 0.000001, 1000),
-    maxPositions: calibration ? 1 : num('MAX_CONCURRENT_POSITIONS', 20, 1, 30, true),
+    maxPositions: calibration ? num('CALIBRATION_MAX_POSITIONS', 20, 1, 20, true) : num('MAX_CONCURRENT_POSITIONS', 20, 1, 30, true),
     cooldownMs: num('COOLDOWN_MS', 30000, 0, 86400000, true),
     maxSignalAgeMs: num('MAX_SIGNAL_AGE_MS', 2500, 250, 10000, true),
     takeProfit: num('TAKE_PROFIT_PCT', 20, 0.1, 10000),

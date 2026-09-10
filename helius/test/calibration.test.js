@@ -27,8 +27,21 @@ function receipt(cal, side, signature, cashLamports, rentLamports = 0, error = n
 test('calibration is explicit, bounded, isolated, and ignores legacy one SOL/20 position settings', () => {
   const normal = readConfig({ HELIUS_API_KEY: 'test' }); assert.equal(normal.dryRun, true); assert.equal(normal.calibration.enabled, false);
   const c = config({ POSITION_SIZE_SOL: '1', MAX_CONCURRENT_POSITIONS: '20' });
-  assert.equal(c.sizeSol, .05); assert.equal(c.maxPositions, 1); assert.match(c.stateFile, /calibration.json$/);
+  assert.equal(c.sizeSol, .05); assert.equal(c.maxPositions, 20); assert.match(c.stateFile, /calibration.json$/);
   for (const extra of [{ DRY_RUN: 'true' }, { SHADOW_ENABLED: 'false' }, { CALIBRATION_SIZE_SOL: '.1' }, { CALIBRATION_MAX_BUYS: '21' }, { CALIBRATION_LOSS_LIMIT_SOL: '.2' }]) assert.throws(() => config(extra));
+});
+test('calibration position cap is independent and changing it preserves the active batch budget', () => {
+  for (const v of ['0', '21', '1.5', 'bad']) assert.throws(() => config({ CALIBRATION_MAX_POSITIONS: v }));
+  const one = config({ CALIBRATION_MAX_POSITIONS: '1', MAX_CONCURRENT_POSITIONS: '20' });
+  assert.equal(one.maxPositions, 1);
+  const s = store(), a = new Calibration(one, s); a.reserve({});
+  s.data.calibration.lossSol = .03;
+  s.data.positions.mint = { rawAmount: '123' }; s.save();
+  const restored = { ...s, data: JSON.parse(s.saved) };
+  const b = new Calibration(config({ CALIBRATION_MAX_POSITIONS: '20' }), restored);
+  assert.equal(b.s.batchId, a.s.batchId); assert.equal(b.s.attempts, 1); assert.equal(b.s.lossSol, .03);
+  assert.equal(restored.data.positions.mint.rawAmount, '123');
+  assert.equal(b.s.limits.maxBuys, 20); assert.equal(b.s.limits.lossLimitSol, .1);
 });
 test('buy reservations survive restart and stop at limit, including failed or unlanded attempts', () => {
   const s = store(), c = config({ CALIBRATION_MAX_BUYS: '2' }); const a = new Calibration(c, s);
