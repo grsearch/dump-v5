@@ -28,7 +28,8 @@ test('calibration is explicit, bounded, isolated, and ignores legacy one SOL/20 
   const normal = readConfig({ HELIUS_API_KEY: 'test' }); assert.equal(normal.dryRun, true); assert.equal(normal.calibration.enabled, false);
   const c = config({ POSITION_SIZE_SOL: '1', MAX_CONCURRENT_POSITIONS: '20' });
   assert.equal(c.sizeSol, .05); assert.equal(c.maxPositions, 20); assert.match(c.stateFile, /calibration.json$/);
-  for (const extra of [{ DRY_RUN: 'true' }, { SHADOW_ENABLED: 'false' }, { CALIBRATION_SIZE_SOL: '.1' }, { CALIBRATION_MAX_BUYS: '21' }, { CALIBRATION_LOSS_LIMIT_SOL: '.2' }]) assert.throws(() => config(extra));
+  for (const extra of [{ DRY_RUN: 'true' }, { SHADOW_ENABLED: 'false' }, { CALIBRATION_SIZE_SOL: '.1' }]) assert.throws(() => config(extra));
+  assert.equal(config({ CALIBRATION_MAX_BUYS: '20', CALIBRATION_LOSS_LIMIT_SOL: '.1' }).calibration.maxBuys, null);
 });
 test('calibration position cap is independent and changing it preserves the active batch budget', () => {
   for (const v of ['0', '21', '1.5', 'bad']) assert.throws(() => config({ CALIBRATION_MAX_POSITIONS: v }));
@@ -41,14 +42,14 @@ test('calibration position cap is independent and changing it preserves the acti
   const b = new Calibration(config({ CALIBRATION_MAX_POSITIONS: '20' }), restored);
   assert.equal(b.s.batchId, a.s.batchId); assert.equal(b.s.attempts, 1); assert.equal(b.s.lossSol, .03);
   assert.equal(restored.data.positions.mint.rawAmount, '123');
-  assert.equal(b.s.limits.maxBuys, 20); assert.equal(b.s.limits.lossLimitSol, .1);
+  assert.equal(b.s.limits.maxBuys, null); assert.equal(b.s.limits.lossLimitSol, null);
 });
-test('buy reservations survive restart and stop at limit, including failed or unlanded attempts', () => {
+test('buy reservations survive restart and continue beyond twenty attempts', () => {
   const s = store(), c = config({ CALIBRATION_MAX_BUYS: '2' }); const a = new Calibration(c, s);
   a.reserve({}); s.save(); a.reserve({}); s.save();
   const restored = { ...s, data: JSON.parse(s.saved) }, b = new Calibration(c, restored);
-  assert.equal(b.reason(), 'calibration_buy_limit'); assert.throws(() => b.reserve({}));
-  assert.throws(() => new Calibration(config({ CALIBRATION_MAX_BUYS: '3' }), restored));
+  for (let i = 0; i < 30; i++) b.reserve({});
+  assert.equal(b.reason(), null); assert.equal(b.s.attempts, 32);
   assert.throws(() => new Calibration({ calibration: { enabled: false } }, restored));
 });
 test('receipt accounting separates ATA deposits/refunds, charges failed fees, and deduplicates', () => {
@@ -63,13 +64,26 @@ test('receipt accounting separates ATA deposits/refunds, charges failed fees, an
   assert.equal(s.data.calibration.rentDeltaSol, 0);
   assert.equal(s.logs.at(-1).senderTipSol, 0);
 });
-test('loss stops are sticky across restart and subsequent gains cannot refund loss budget', () => {
+test('cumulative loss remains recorded but does not stop new entries', () => {
   const s = store(), c = config({ CALIBRATION_LOSS_LIMIT_SOL: '.01' }), a = new Calibration(c, s);
-  receipt(a, 'buy', 'b', -50000000); receipt(a, 'sell', 's', 30000000); s.save();
-  assert.equal(a.reason(), 'calibration_loss_limit');
-  const b = new Calibration(c, { ...s, data: JSON.parse(s.saved) }); assert.equal(b.reason(), 'calibration_loss_limit');
+  receipt(a, 'buy', 'b', -500000000); receipt(a, 'sell', 's', 30000000); s.save();
+  assert.equal(a.reason(), null);
+  const b = new Calibration(c, { ...s, data: JSON.parse(s.saved) }); assert.equal(b.reason(), null); b.reserve({});
   receipt(a, 'buy', 'b2', -50000000); receipt(a, 'sell', 's2', 100000000);
-  assert.equal(a.reason(), 'calibration_loss_limit'); assert.ok(s.data.calibration.lossSol >= .02);
+  assert.equal(a.reason(), null); assert.ok(s.data.calibration.lossSol >= .47);
+});
+test('legacy ledger migration removes only retired stops and preserves existing evidence', () => {
+  for (const reason of ['calibration_buy_limit', 'calibration_loss_limit', 'calibration_accounting_unavailable', 'calibration_buy_accounting_missing']) {
+    const s = store(); new Calibration(config(), s);
+    Object.assign(s.data.calibration, { version: 1, limits: { sizeSol: .05, maxBuys: 20, lossLimitSol: .1 }, attempts: 25, lossSol: .3, stoppedReason: reason });
+    const id = s.data.calibration.batchId; s.data.positions.m = { rawAmount: '10' }; s.data.pending.tx = { signature: 'tx' };
+    s.data.calibration.transactions.old = { signature: 'old' };
+    const a = new Calibration(config(), s);
+    assert.equal(a.s.version, 2); assert.equal(a.s.batchId, id); assert.equal(a.s.attempts, 25); assert.equal(a.s.lossSol, .3);
+    assert.ok(a.s.transactions.old); assert.ok(s.data.positions.m); assert.ok(s.data.pending.tx);
+    assert.equal(a.reason(), reason.includes('accounting') ? reason : null);
+    const restored = new Calibration(config(), { ...s, data: JSON.parse(s.saved) }); assert.equal(restored.reason(), a.reason());
+  }
 });
 test('missing balance evidence stops entries instead of manufacturing zero cost', () => {
   const s = store(), a = new Calibration(config(), s);
@@ -86,14 +100,14 @@ test('live calibration requires filter response and rejects six risk checks befo
     assert.equal(built, 0); assert.equal(e.candidates, 0); assert.equal(e.calibration.s.attempts, 0);
   }
 });
-test('stopped entry budget still allows sells, and signed uncertain buys consume only one attempt', async () => {
+test('accounting entry stop still allows sells, and signed uncertain buys count once', async () => {
   const s = store(), c = config(), stream = { connected: true, budgetExceeded: () => false };
   const ex = { async buildSwap() { return { signature: 'signed', serialized: 'bytes', ata: 'ata' }; }, async submit() { throw new Error('uncertain'); } };
   const e = new Engine(c, s, ex, stream), swap = { ...parseSwaps(fixture())[0], impact: 20, sellSol: 10 };
   await assert.rejects(e.buy(swap, Promise.resolve({ arm: { status: 'pass' } })), /uncertain/);
   assert.equal(JSON.parse(s.saved).calibration.attempts, 1); assert.ok(JSON.parse(s.saved).pending.signed);
   await e.buy(swap, Promise.resolve({ arm: { status: 'pass' } })); assert.equal(e.calibration.s.attempts, 1);
-  delete s.data.pending.signed; e.calibration.s.stoppedReason = 'calibration_loss_limit';
+  delete s.data.pending.signed; e.calibration.s.stoppedReason = 'calibration_accounting_unavailable';
   let sold = false; ex.submit = async () => { sold = true; };
   await e.sell({ ...swap, rawAmount: '1', lastPrice: 1 }, 'stop_loss'); assert.equal(sold, true);
 });

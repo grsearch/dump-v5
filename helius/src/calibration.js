@@ -1,6 +1,6 @@
 'use strict';
 const crypto = require('node:crypto');
-// Persistent, conservative batch budget. Only entry is stopped; exits and receipt reconciliation continue.
+// Persistent calibration accounting. Accounting faults stop entry; counts/losses are statistics only.
 class Calibration {
   constructor(c, store) {
     this.c = c; this.store = store;
@@ -12,21 +12,27 @@ class Calibration {
     let s = store.data.calibration;
     if (!s) {
       if (['positions', 'pending', 'cleanup'].some(k => Object.keys(store.data[k]).length)) throw new Error('Calibration requires an empty dedicated state');
-      s = store.data.calibration = { version: 1, batchId: crypto.randomUUID(), limits, attempts: 0,
+      s = store.data.calibration = { version: 2, batchId: crypto.randomUUID(), limits, attempts: 0,
         lossSol: 0, cashDeltaSol: 0, rentDeltaSol: 0, stoppedReason: null, transactions: {}, buys: {} };
       store.save();
     }
-    if (s.version !== 1 || JSON.stringify(s.limits) !== JSON.stringify(limits)
+    if (![1, 2].includes(s.version) || s.limits?.sizeSol !== limits.sizeSol
       || !Number.isInteger(s.attempts) || s.attempts < 0 || !Number.isFinite(s.lossSol) || s.lossSol < 0
       || !Number.isFinite(s.cashDeltaSol) || !Number.isFinite(s.rentDeltaSol) || typeof s.batchId !== 'string'
       || !s.transactions || Array.isArray(s.transactions) || !s.buys || Array.isArray(s.buys)) throw new Error('Invalid or changed calibration budget');
     this.s = s;
+    if (s.version === 1) {
+      // Preserve the batch and every receipt/position; retire only the two explicitly removed stops.
+      s.previousLimits = { ...s.limits };
+      s.version = 2; s.limits = limits;
+      if (['calibration_buy_limit', 'calibration_loss_limit'].includes(s.stoppedReason)) s.stoppedReason = null;
+      store.save();
+      store.log('calibration_limits_removed', { batchId: s.batchId, attempts: s.attempts, lossSol: s.lossSol, version: 2 });
+    }
   }
   reason() {
     if (!this.s) return null;
     if (this.s.stoppedReason) return this.s.stoppedReason;
-    if (this.s.lossSol >= this.s.limits.lossLimitSol) return 'calibration_loss_limit';
-    if (this.s.attempts >= this.s.limits.maxBuys) return 'calibration_buy_limit';
     return null;
   }
   reserve(p) {
@@ -77,7 +83,6 @@ class Calibration {
         }
       }
     }
-    if (this.s.lossSol >= this.s.limits.lossLimitSol) this.s.stoppedReason ||= 'calibration_loss_limit';
     this.s.transactions[p.signature] = event;
     this.store.log('calibration_receipt', event);
   }

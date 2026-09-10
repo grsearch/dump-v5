@@ -29,8 +29,7 @@ function readConfig(env = process.env) {
   const swqos = new URL(senderUrl).searchParams.get('swqos_only') === 'true';
   const c = {
     dryRun, apiKey,
-    calibration: { enabled: calibration, maxBuys: num('CALIBRATION_MAX_BUYS', 20, 1, 20, true),
-      lossLimitSol: num('CALIBRATION_LOSS_LIMIT_SOL', 0.1, 0.001, 0.1), referenceSizeSol: 1 },
+    calibration: { enabled: calibration, maxBuys: null, lossLimitSol: null, referenceSizeSol: 1 },
     paperPrebuyFilter: bool('PAPER_PREBUY_FILTER', true),
     rpcUrl: endpoint(env.HELIUS_RPC_URL || `https://mainnet.helius-rpc.com/?api-key=${encodeURIComponent(apiKey)}`, ['https:']),
     wsUrl: endpoint(env.HELIUS_WS_URL || `wss://mainnet.helius-rpc.com/?api-key=${encodeURIComponent(apiKey)}`, ['wss:']),

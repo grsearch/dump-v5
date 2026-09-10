@@ -19,21 +19,19 @@ DRY_RUN=false
 LIVE_CALIBRATION=true
 CALIBRATION_SIZE_SOL=0.05
 CALIBRATION_MAX_POSITIONS=20
-CALIBRATION_MAX_BUYS=20
-CALIBRATION_LOSS_LIMIT_SOL=0.1
 STATE_FILE=data/calibration.json
 SHADOW_ENABLED=true
 ```
 
 另需配置专用钱包WALLET_PRIVATE_KEY_BS58及现有Helius凭据，密钥不入仓库。不要与其他交易程序共享钱包。已有持仓/待确认交易应使用原模式原账本先完成处理，不能换账本丢掉它们。校准买入拒绝已有WSOL账户，避免外部余额干扰；实盘执行路径仅允许通过校验的元数据Mint扩展及ImmutableOwner账户扩展，准备失败必须单独统计，不代表所有候选都能执行。
 
-校准持仓上限由CALIBRATION_MAX_POSITIONS配置（整数1–20，默认20），买币付款上限使用CALIBRATION_SIZE_SOL（上限0.05，交易费/tip及开户押金另计）；SDK滑点余量包含在该上限内，因此实际买入本金可能更小，忽略原POSITION_SIZE_SOL=1及MAX_CONCURRENT_POSITIONS=20。最多20次已签名买入尝试，包括失败和过期未落链，不是保证20笔成功买入；同一未知签名重试不重复记次数。不确定交易先核对，不能重新构建第二笔买单。
+校准持仓上限由CALIBRATION_MAX_POSITIONS配置（整数1–20，默认20），买币付款上限使用CALIBRATION_SIZE_SOL（上限0.05，交易费/tip及开户押金另计）；SDK滑点余量包含在该上限内，因此实际买入本金可能更小，忽略原POSITION_SIZE_SOL=1及MAX_CONCURRENT_POSITIONS=20。买入尝试继续统计（包括已发送失败与过期未落链），不再限制总次数；同一未知签名重试不重复记次数。不确定交易先核对，不能重新构建第二笔买单。
 
-累计亏损默认0.1 SOL、上限0.1：逐笔已实现经济亏损加失败/关闭账户费用，盈利不抵扣已发生亏损。达到限额只停止新买入，仍核对pending、卖出持仓及回收账户。限额不包括未实现浮亏，也不能保证跳价、退出失败或持续退出费用不会超限。达到20次后同样只停止新买入。
+累计亏损lossSol继续统计逐笔已实现经济亏损及失败/关闭账户费用，盈利不抵扣已发生亏损；累计亏损不再触发自动停买。总买入尝试也不再触发自动停买。旧CALIBRATION_MAX_BUYS、CALIBRATION_LOSS_LIMIT_SOL环境变量即使保留也不再生效。
 
-预算、批次ID、已处理签名与买入成本保存在独立calibration.json，重启不清零；已有批次不接受改大限额，关闭校准模式也不能继续使用该账本。不要删除/改名账本来重置额度；下一批次应先导出分析并核对所有余额、挂单和账户回收，再另行安排。
+批次ID、次数、亏损、已处理签名与买入成本保存在独立calibration.json，重启不清零。旧version=1账本首次启动自动迁移为version=2，保留持仓、待确认交易和所有统计；仅清除原次数/亏损停买原因，账务异常停买原因保留。limits.maxBuys和limits.lossLimitSol为null，表示无限额，不是零额度。不要删除账本或换账本丢掉未完成交易。
 
-六项过滤强制作用于校准买入，包括迁移AGE；历史unknown沿用原允许规则，worker不可用/超时或明确风险拒绝则不买。过滤、持仓与预算检查都在发送前；账户、余额、链上成交无法核对时阻止新买入。现有20%止盈、25%止损和移动止盈保持原配置。
+六项过滤强制作用于校准买入，包括迁移AGE；历史unknown沿用原允许规则，worker不可用/超时或明确风险拒绝则不买。过滤、持仓与账务状态检查都在发送前；账户、余额、链上成交无法核对时阻止新买入。现有20%止盈、25%止损和移动止盈保持原配置。
 
 ### 对照与账务
 
@@ -456,7 +454,7 @@ execution-audit.json升级schema=2，保留原totals和rows，新增costSummary�
 
 无需新配置、无需重装模型或调整COS定时器。更新后先导出15分钟，核对session版本、新selection组以及execution-audit.json的costSummary；若窗口没有-32016错误，短重试计数为零是正常的。当前三项危险拦截、1 SOL金额、20%止盈和25%止损保持不变。
 
-校准持仓配置可直接沿用旧calibration.json，修改上限不会重置batchId、attempts、lossSol或持仓。下调上限不会强卖已有仓位，只限制后续买入。20仓表示最多同时持有20个币，交易构建/发送与待确认核对仍串行；六项过滤、每分钟候选预算、冷却和20次总买入尝试限制继续有效。0.1 SOL是已实现亏损停止入场线，多仓浮亏与退出费用可能使最终亏损超过该值。钱包还需预留交易费、tip和开户押金，不能按余额除以0.05就认定可买满20仓。部署保留.env和账本，建议显式设置CALIBRATION_MAX_POSITIONS=20。
+校准持仓配置可直接沿用旧calibration.json，修改上限不会重置batchId、attempts、lossSol或持仓。下调上限不会强卖已有仓位，只限制后续买入。20仓表示最多同时持有20个币，交易构建/发送与待确认核对仍串行；六项过滤、每分钟候选预算和冷却继续有效；总买入次数与累计亏损不再限制入场。钱包还需预留交易费、tip和开户押金，不能按余额除以0.05就认定可买满20仓。部署保留.env和账本，建议显式设置CALIBRATION_MAX_POSITIONS=20。
 
 ## executionExtensionsVersion=1：Token-2022执行兼容与统计
 
