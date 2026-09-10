@@ -3,7 +3,7 @@ const test = require('node:test'), assert = require('node:assert/strict');
 const { selection } = require('../src/shadow/selection');
 const { selectionValidation } = require('../src/reporting/selection-validation');
 const { recoveryAudit } = require('../src/reporting/recovery-audit');
-const snapshot = () => ({ ready: true, values: { buyFraction15: .2, buySol15: 2, sellSol15: 8, return60Pct: -20, trades60: 10, sellSol: 39.99, consecutiveSells: 2, buySol5: 1, sellSol5: 2 } });
+const snapshot = () => ({ ready: true, values: { buyFraction15: .2, buySol15: 2, sellSol15: 8, return60Pct: -20, trades60: 10, sellSol: 39.99, buyFraction5: 1 / 3, consecutiveSells: 2, buySol5: 1, sellSol5: 2 } });
 const select = s => selection({}, {}, true, null, s);
 test('prebuy filters use fixed boundaries and do not depend on models', () => {
   const s = snapshot(), before = JSON.stringify(s);
@@ -66,7 +66,7 @@ test('strict history comparison exports the missed outcome without turning missi
 test('consecutive sell pressure rejects only the joint condition and preserves legacy observation', () => {
   const s = snapshot(); s.values.consecutiveSells = 3;
   let result = select(s);
-  assert.equal(result.version, 5);
+  assert.equal(result.version, 6);
   assert.equal(result.arms.prebuyCombined.status, 'reject');
   assert.equal(result.arms.prebuyLegacy.status, 'pass');
   assert.equal(result.arms.prebuyCombined.rejected[0].check, 'consecutivePressure');
@@ -95,4 +95,39 @@ test('blocked pressure samples retain counterfactual losses in export and replay
   assert.equal(g.arms.prebuyCombined.pairedDifferenceSol, .4);
   s.values.consecutiveSells = 2;
   assert.equal(eligible({ decisionFresh: true, features: s }), true);
+});
+
+test('buy burst rejects the exact 80 percent boundary and preserves previous combined selection', () => {
+  const { eligible } = require('../scripts/replay-entry-research');
+  const s = snapshot(); Object.assign(s.values, { buySol5: 8, sellSol5: 2, buyFraction5: .8 });
+  const result = select(s);
+  assert.equal(result.arms.prebuyCombined.status, 'reject');
+  assert.equal(result.arms.prebuyBeforeBuy80.status, 'pass');
+  assert.equal(result.arms.prebuyCombined.rejected[0].check, 'priorBuyBurst');
+  assert.equal(eligible({ decisionFresh: true, features: s }), false);
+  Object.assign(s.values, { buySol5: 7.999, sellSol5: 2.001, buyFraction5: .7999 });
+  assert.equal(select(s).arms.prebuyCombined.status, 'pass');
+  Object.assign(s.values, { buySol5: 10, sellSol5: 0, buyFraction5: 1 });
+  assert.equal(select(s).arms.prebuyCombined.status, 'reject');
+});
+test('buy burst requires valid nonempty observed history and does not fabricate danger', () => {
+  for (const values of [{ buyFraction5: undefined }, { buyFraction5: NaN }, { buyFraction5: 1.01 }, { buyFraction5: -1 }, { buySol5: 0, sellSol5: 0, buyFraction5: 1 }, { buySol5: Infinity }]) {
+    const s = snapshot(); Object.assign(s.values, values);
+    assert.equal(select(s).arms.avoidBuyBurst.status, 'unknown');
+    assert.equal(select(s).arms.prebuyAllowUnknown.status, 'pass');
+  }
+  const s = snapshot(); s.ready = false; s.values.buyFraction5 = 1;
+  assert.equal(select(s).arms.avoidBuyBurst.status, 'unknown');
+  s.values.sellSol = 40;
+  assert.equal(select(s).arms.prebuyCombined.status, 'reject');
+});
+test('buy burst counterfactual return is retained in selection and state recovery exports', () => {
+  const s = snapshot(); Object.assign(s.values, { buySol5: 8, sellSol5: 2, buyFraction5: .8 });
+  const sample = { id: 'burst', at: 1000, runId: 'r', policyId: 'p', selection: select(s) };
+  const outcomes = new Map([['burst:strategy_proxy', { at: 2000, status: 'observed_proxy', policyId: 'p', netPnlSol: -.3, entryCostSol: 1 }]]);
+  const g = selectionValidation(new Map([['burst', sample]]), outcomes, { start: new Date(0).toISOString(), endExclusive: new Date(3000).toISOString() }).groups[0];
+  assert.equal(g.arms.prebuyBeforeBuy80.selectedNetSol, -.3);
+  assert.equal(g.arms.prebuyCombined.pairedDifferenceSol, .3);
+  const audit = recoveryAudit(new Map([['burst', { ...sample, type: 'state_exit_recovery', variant: 'baseline', phase: 'finished', status: 'unknown' }]]), new Map());
+  assert.equal(audit.groups[0].prebuyBeforeBuy80.unknown, 1);
 });

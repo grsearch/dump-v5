@@ -1,6 +1,17 @@
 # Helius PumpSwap 全网砸单版
 
-## 最新：连续卖出压力过滤（selectionVersion=5）
+## 最新：前5秒买入占比过滤（selectionVersion=6）
+
+默认纸面买前过滤新增：触发砸单之前5秒，买入SOL金额 /（买入SOL金额＋卖出SOL金额）≥80%就跳过。恰好80%也拦截；不包含触发砸单本身，不按笔数或地址数计算。需要完整历史、有效字段及正成交总额，缺失/零成交按unknown沿用原处理，不伪造危险命中。
+
+这是基于多个已检查历史时段的减亏尝试；同币匹配差异不完全一致，未知结果仍存在，不保证未来盈利。被过滤信号继续原后台观察，无新RPC或等待窗口，不消耗纸面持仓、准备名额、冷却。只影响PAPER_PREBUY_FILTER=true且DRY_RUN=true的纸面买入；其他下单路径及退出规则保持原状。
+
+核对session.selectionVersion=6、sample.observationVersion=selection-v6；拒绝原因priorBuyBurst / prior_buy_fraction_5s_at_least_80pct。新增avoidBuyBurst单项分组和prebuyBeforeBuy80（上一版四项规则）分组；prebuyCombined改为五项规则，prebuyLegacy仍保留最初三项。质量报告与恢复报告分别保留新旧组，缺失结果不填零。无需新配置、重装模型或修改每日COS任务。
+
+离线入场回放随当前selection使用五项规则，旧归档缺失买入占比字段时按未知跳过。部署边界前后的结果按selectionId和进程分组，不直接混合。
+
+
+## 历史更新：连续卖出压力过滤（selectionVersion=5）
 
 默认 PAPER_PREBUY_FILTER=true 且 DRY_RUN=true 时，新增直接跳过条件：触发砸单之前的成交序列已连续至少3笔卖出，且前5秒卖出SOL金额严格大于买入SOL金额。两项必须同时成立；触发砸单本身不计入，连续3笔不要求同一卖家，也不限定都在5秒内。金额相等或只有2笔连续卖出不触发。
 

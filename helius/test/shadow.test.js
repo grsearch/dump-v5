@@ -34,7 +34,7 @@ function warm(t) { for (let at = 0; at < 60000; at += 5000) t.onSwap(swap(at), f
 test('independent entry research preserves original labels and records buyer identity only in confirmation window', () => {
   const enabled = collector({ entryComparisons: true }), disabled = collector({ entryComparisons: false });
   for (const { tracker } of [enabled, disabled]) {
-    warm(tracker); tracker.onSwap(swap(60000), true, true);
+    warm(tracker); tracker.onSwap(swap(59000, { side: 'sell' }), false, false); tracker.onSwap(swap(60000), true, true);
     tracker.onSwap(swap(60500), false, true);
     tracker.onSwap(swap(61000, { postQuote: '104000000000', user: 'second-buyer' }), false, true);
     tracker.onSwap(swap(61500, { postQuote: '105000000000' }), false, true);
@@ -87,7 +87,7 @@ test('sample is written before outcome, with no fabricated probability when no m
   const sample = records.find(r => r.type === 'sample');
   assert.ok(sample.features.ready); assert.equal(sample.prediction.status, 'no_model'); assert.equal(sample.prediction.probability, null);
   assert.equal(sample.selection.arms.risk.status, 'unknown');
-  assert.equal(sample.observationVersion, 'selection-v5');
+  assert.equal(sample.observationVersion, 'selection-v6');
   assert.equal(records.filter(r => r.type === 'outcome').length, 0);
   assert.ok(sample.features.lastHistorySequence < sample.sequence);
 });
@@ -341,4 +341,16 @@ test('pool gap preserves recovery independently of censored baseline and trainin
   assert.equal(records.filter(r => r.type === 'outcome').length, labels.length);
   assert.ok(records.some(r => r.type === 'no_stop_recovery' && r.status === 'discontinuous_proxy'));
   assert.ok(records.filter(r => r.type === 'exit_comparison').every(r => r.status === 'censored'));
+});
+
+test('buy burst excludes trigger amount and still records the rejected candidate baseline entry', () => {
+  const { tracker, records } = collector({ entryComparisons: true }); warm(tracker);
+  tracker.onSwap(swap(60000, { side: 'sell', quoteSol: 999 }), true, true);
+  const sample = records.find(r => r.type === 'sample');
+  assert.equal(sample.features.values.buyFraction5, 1);
+  assert.equal(sample.selection.arms.prebuyCombined.status, 'reject');
+  assert.equal(sample.selection.arms.prebuyBeforeBuy80.status, 'pass');
+  tracker.onSwap(swap(60500), false, true);
+  assert.ok(records.some(r => r.type === 'proxy_entry' && r.id === sample.id));
+  assert.ok(records.some(r => r.type === 'entry_comparison' && r.status === 'skipped'));
 });

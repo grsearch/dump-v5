@@ -40,7 +40,7 @@ test('paper buy never calls executor and is deduplicated', async () => {
 });
 
 test('paper prebuy rejects each risk before spending capacity, cooldown or preparing', async () => {
-  for (const check of ['priorBuy', 'priorReturn', 'dumpSize', 'consecutivePressure']) {
+  for (const check of ['priorBuy', 'priorReturn', 'dumpSize', 'consecutivePressure', 'priorBuyBurst']) {
     const { engine, store } = setup({ paperPrebuyFilter: true });
     const s = { ...parseSwaps(fixture())[0], impact: 20, sellSol: check === 'dumpSize' ? 40 : 10 };
     await engine.buy(s, Promise.resolve({ arm: { status: 'reject', rejected: [{ check }] } }));
