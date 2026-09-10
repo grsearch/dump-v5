@@ -269,11 +269,17 @@ test('paper filter client matches responses, times out and ignores late replies'
   const client = new ShadowClient({ ...base, dryRun: true, paperPrebuyFilter: true }, { workerFactory: () => fake });
   const first = client.observe(swap(Date.now()), true, true); client.pump();
   const id = batches[0].events[0].filterId;
-  fake.emit('message', { type: 'paper_filter', filterId: id, selection: { arm: { status: 'reject' } } });
+  fake.emit('message', { type: 'paper_filter', filterId: id, queueMs: 5, computeMs: 3, selection: { arm: { status: 'reject' } } });
   assert.equal((await first).arm.status, 'reject'); assert.equal(client.filters.size, 0);
   const second = client.observe(swap(Date.now()), true, true);
   assert.equal(await second, null); assert.equal(client.filters.size, 0);
   fake.emit('message', { type: 'paper_filter', filterId: id + 1, selection: { arm: { status: 'pass' } } });
+  assert.equal(client.stats().filterTiming.requests, 2);
+  assert.equal(client.stats().filterTiming.responses, 1);
+  assert.equal(client.stats().filterTiming.timeouts, 1);
+  assert.equal(client.stats().filterTiming.lateResponses, 1);
+  assert.equal(client.stats().filterTiming.maxQueueMs, 5);
+  assert.equal(client.stats().filterTiming.maxComputeMs, 3);
   while (client.queue.length || client.inFlight) fake.emit('message', { type: 'ack' });
   await client.close();
 });

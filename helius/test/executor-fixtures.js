@@ -31,7 +31,7 @@ function state(e, cashback = false) {
     globalConfig: { protocolFeeRecipients: [pub(9)], buybackFeeRecipients: [pub(10)], buybackBasisPoints: new BN(0) },
     feeConfig: { flatFees: fees, feeTiers: [{ marketCapLamportsThreshold: new BN(0), fees }] },
     baseMint, baseMintAccount: { supply: 1000000000000000n, decimals: 6 },
-    poolBaseAmount: new BN('1000000000000'), poolQuoteAmount: new BN('100000000000'),
+    poolBaseAmount: new BN('1000000000000'), poolQuoteAmount: new BN('200000000000'),
     baseTokenProgram: TOKEN_PROGRAM_ID, quoteTokenProgram: TOKEN_PROGRAM_ID,
     userBaseTokenAccount: getAssociatedTokenAddressSync(baseMint, user), userQuoteTokenAccount: getAssociatedTokenAddressSync(quoteMint, user),
     userBaseAccountInfo: null, userQuoteAccountInfo: null,

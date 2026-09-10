@@ -12,6 +12,14 @@ function setup(errors, overrides = {}) {
     { now: () => time, sleep: async ms => { waits.push(ms); time += ms; } }) };
 }
 const lag = () => Object.assign(new Error('accounts: minimum context slot'), { code: -32016, data: { contextSlot: 120 } });
+
+test('live entry policy allows only one additional slot retry inside the original signal deadline', async () => {
+  let now = 1000, calls = 0; const waits = [];
+  const rpc = { async getMultipleAccountsInfoAndContext() { if (++calls <= 3) throw lag(); return { context: { slot: 123 }, value: [] }; } };
+  await readAccounts(rpc, [], { slot: 123, receivedAt: 1000, eventTime: 1000, isEntry: true },
+    { maxSignalAgeMs: 2500, liveEntryPolicy: {} }, () => {}, { now: () => now, sleep: async ms => { now += ms; waits.push(ms); } });
+  assert.equal(calls, 4); assert.deepEqual(waits, [100, 200, 300]);
+});
 test('lagging execution read retries twice with original slot then succeeds', async () => {
   const s = setup([lag(), lag()]); await s.run();
   assert.deepEqual(s.waits, [100, 200]); assert.equal(s.calls.length, 3);

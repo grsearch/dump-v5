@@ -484,3 +484,11 @@ execution_token_extensions记录version=1、side、sourceSignature、pool、账�
 卖出 `-32016` 准备失败或链上确认 `6004` 后，查看 `exit_retry_scheduled` 的 kind、delayMs 和 fast；短重试资格 250/500/1000ms，每仓/全局60秒最多3/6次，实际执行受行情或1秒维护循环、执行锁和链上确认影响。其他错误仍10秒退避，未知签名不重新广播替代交易。预算持久化。退出失败后即使回升也保留退出意图；不要把这种重试当作新策略信号。
 
 `stream_traffic.version=2` 含 reasons，原类别计数保留；原因字节均分，原因消息数可能重叠。导出15–30分钟后用 `stream-traffic-report.js` 汇总，关注未采用交易中各原因的字节占比。无新增行情订阅或流量分析RPC；实盘短重试本身可能增加执行RPC。
+
+## 实盘防守版本核对
+
+本版starting.strategyConfig.liveEntryPolicy.version=1：reserveExclusiveSol=100（储备必须>100）、lossCooldownMs=600000、waitMs=500、maxWaiters=16。只作用实盘，新买过滤不阻碍已有仓位退出。更新保留calibration.json / live.json和全部模型，升级从校准回执恢复最近亏损冷却。
+
+验证live_entry_policy的live_reserve_at_most_100_sol / live_loss_cooldown；成功亏损卖出后应有live_loss_cooldown_started，lossCooldowns保存在账本和归档快照。自然无该场景不算失败。再检查live_entry_wait与shadow_health.filterTiming，统计实际改善的成交率，不拿所有shadow反事实入场数当应买数量。
+
+原shadow selectionVersion保持7，额外实盘门槛由liveEntryPolicy单独标记；与原shadow比较时必须按sourceSignature+pool及same_size角色配对，并根据实盘拒绝/等待日志分组，不能将新实盘过滤伪装成旧selection定义。买入100 SOL边界、10分钟冷却到期和重启恢复均有本地测试；服务器要以部署后实际日志验证。

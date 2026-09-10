@@ -92,6 +92,9 @@ class Executor {
     if (this.c.calibration?.enabled && side === 'buy' && state.userQuoteAccountInfo) throw new Error('Calibration requires no pre-existing WSOL account; use a dedicated wallet');
     if (side === 'buy' && account?.amount > 0n) throw new Error('Wallet already holds this mint; refusing to merge external holdings');
     if (side === 'buy' && Number(state.poolQuoteAmount.toString()) / 1e9 < this.c.minLiquidity) throw new Error('Pool liquidity below threshold');
+    if (side === 'buy' && !this.c.dryRun && this.c.liveEntryPolicy
+      && Number(state.poolQuoteAmount.toString()) / 1e9 <= this.c.liveEntryPolicy.reserveExclusiveSol)
+      throw new Error('Live reserve must exceed 100 SOL');
     if (side === 'sell' && (!account || account.amount < BigInt(rawAmount))) throw new Error('Wallet balance below tracked position');
     const ixs = side === 'buy'
       ? await PUMP_AMM_SDK.buyQuoteInput(state, buyQuoteLamports(this.c), this.c.buySlippageBps / 100)

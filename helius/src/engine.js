@@ -18,6 +18,11 @@ class Engine {
     this.shadow = shadow;
     this.calibration = new (require('./calibration'))(config, store);
     this.entryGuards = new Map();
+    this.entryWaiters = new Set();
+    for (const receipt of Object.values(this.data.calibration?.transactions || {})) {
+      if (receipt.receiptObservedAt + (config.liveEntryPolicy?.lossCooldownMs || 0) > Date.now())
+        require('./live-entry-policy').recordLoss(config, this.data, receipt);
+    }
     this.migrationDiagnostics = {}; this.migrationDiagnosticSamples = 0;
   }
   shadowEvent(method, ...args) { try { return this.shadow?.[method](...args); } catch (_) { /* Paper filter handles unavailable results; errors never escape the sidecar. */ } }
@@ -65,12 +70,18 @@ class Engine {
   pending() { return Object.keys(this.data.pending).length > 0; }
   async buy(swap, filter) {
     if (!this.c.calibration?.enabled) return this.prepareBuy(swap, filter);
-    const guard = new (require('./entry-guard').EntryGuard)(swap);
+    const guard = new (require('./entry-guard').EntryGuard)(swap, this.c.liveEntryPolicy?.reserveExclusiveSol);
     const token = Symbol(); this.entryGuards.set(token, guard);
     try { return await this.prepareBuy(swap, filter, guard); }
     finally { this.entryGuards.delete(token); }
   }
   async prepareBuy(swap, filter, guard) {
+    const policyReason = require('./live-entry-policy').reason(this.c, this.data, swap);
+    if (policyReason) {
+      this.store.log('live_entry_policy', { version: 1, mint: swap.mint, pool: swap.pool, sourceSignature: swap.signature,
+        reason: policyReason, reserveSol: swap.liquidity, cooldownUntil: this.data.lossCooldowns?.[swap.mint] ?? null });
+      this.shadowEvent('decision', swap, 'skipped', { reason: policyReason }); return;
+    }
     if ((this.c.dryRun && this.c.paperPrebuyFilter) || this.c.calibration?.enabled) {
       const startedAt = Date.now();
       // Same pre-dump snapshot as the research worker; no duplicate history or RPC.
@@ -91,10 +102,20 @@ class Engine {
       this.store.log('live_entry_cancelled', { version: 1, mint: swap.mint, pool: swap.pool, sourceSignature: swap.signature, ...detail });
       this.shadowEvent('decision', swap, 'not_submitted', detail); return true;
     };
+    if (!this.c.dryRun && this.c.liveEntryPolicy && (this.busy || this.reconciling || this.pending())) {
+      await this.waitForEntry(swap, guard);
+      if (!isSignal(swap, this.c)) { this.shadowEvent('decision', swap, 'skipped', { reason: 'expired_after_entry_wait' }); return; }
+    }
     if (rejectGuard(guard?.rejected)) return;
+    const policyAfterWait = require('./live-entry-policy').reason(this.c, this.data, swap);
+    if (policyAfterWait) {
+      this.store.log('live_entry_policy', { version: 1, mint: swap.mint, pool: swap.pool, sourceSignature: swap.signature,
+        reason: policyAfterWait, reserveSol: swap.liquidity, cooldownUntil: this.data.lossCooldowns?.[swap.mint] ?? null });
+      this.shadowEvent('decision', swap, 'skipped', { reason: policyAfterWait }); return;
+    }
     const now = Date.now();
     const reason = this.calibration.reason() || (this.stopped ? 'stopped' : this.busy ? 'wallet_busy' : this.reconciling ? 'reconciling'
-      : this.pending() ? 'pending_transaction' : !this.stream.connected ? 'stream_disconnected'
+      : this.pending() ? 'pending_transaction' : this.exitDue() ? 'exit_priority' : !this.stream.connected ? 'stream_disconnected'
         : this.stream.budgetExceeded() ? 'stream_budget' : this.data.positions[swap.mint] ? 'already_held'
           : Object.keys(this.data.positions).length >= this.c.maxPositions ? 'position_limit'
             : (this.data.cooldown[swap.mint] || 0) > now ? 'cooldown' : this.data.seen[swap.signature] ? 'duplicate_signal' : null);
@@ -141,6 +162,26 @@ class Engine {
       this.shadowEvent('decision', swap, this.pending() ? 'submission_uncertain' : 'preparation_failed');
       throw err;
     } finally { this.busy = false; }
+  }
+  exitDue() {
+    return !this.c.dryRun && Object.values(this.data.positions).some(p => p.exitRetryReason || exitReason(p, p.lastPrice, this.c));
+  }
+  async waitForEntry(swap, guard) {
+    if (this.c.dryRun || !this.c.liveEntryPolicy || !(this.busy || this.reconciling || this.pending())) return;
+    if (this.entryWaiters.size >= this.c.liveEntryPolicy.maxWaiters || this.entryWaiters.has(swap.pool)) return;
+    const start = Date.now(), deadline = Math.min(start + this.c.liveEntryPolicy.waitMs,
+      swap.receivedAt + this.c.maxSignalAgeMs, swap.eventTime + this.c.maxSignalAgeMs + 1000);
+    this.entryWaiters.add(swap.pool);
+    try {
+      while (Date.now() < deadline && !this.stopped && this.stream.connected && !guard?.rejected
+        && (this.busy || this.reconciling || this.pending())) {
+        await new Promise(resolve => setTimeout(resolve, Math.min(25, Math.max(1, deadline - Date.now()))));
+      }
+    } finally {
+      this.entryWaiters.delete(swap.pool);
+      this.store.log('live_entry_wait', { mint: swap.mint, pool: swap.pool, sourceSignature: swap.signature,
+        waitMs: Date.now() - start, stillBusy: !!(this.busy || this.reconciling || this.pending()) });
+    }
   }
   async sell(p, reason) {
     p.exitDiagnostic ||= { version: 1, firstTriggerAt: Date.now(), reason, triggerPrice: p.lastPrice,
@@ -275,6 +316,13 @@ class Engine {
       actual = { buySignature: position.buySignature, openedAt: position.openedAt, heldMs: Date.now() - position.openedAt,
         entrySol: position.entrySol, reason: p.reason, rawSold: (pre - post).toString(), quoteSol: fill?.quoteSol ?? null,
         netPnlSol: fill ? fill.quoteSol - Number(receipt.meta.fee) / 1e9 - this.c.tipLamports / 1e9 - position.entrySol : null };
+      const economicReceipt = this.calibration.s?.transactions[p.signature];
+      const previousLossCooldown = this.data.lossCooldowns?.[p.mint] || 0;
+      require('./live-entry-policy').recordLoss(this.c, this.data, economicReceipt || {
+        side: 'sell', status: 'confirmed', mint: p.mint, netPnlSol: actual.netPnlSol, receiptObservedAt: Date.now() });
+      if ((this.data.lossCooldowns?.[p.mint] || 0) > previousLossCooldown)
+        this.store.log('live_loss_cooldown_started', { mint: p.mint, signature: p.signature,
+          netPnlSol: economicReceipt?.netPnlSol ?? actual.netPnlSol, cooldownUntil: this.data.lossCooldowns[p.mint] });
       if (post === 0n && position.createdByBot) {
         this.data.cleanup[p.mint] = { mint: p.mint, ata: p.ata, tokenProgram: position.tokenProgram,
           createdByBot: true, soldAt: Date.now(), dueAt: Date.now() + this.c.closeAfterMs };

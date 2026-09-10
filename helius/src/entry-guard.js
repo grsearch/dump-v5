@@ -6,10 +6,13 @@ function historyUnavailable(arm) {
     || (arm.unknown || []).some(x => HISTORY.has(x.check));
 }
 class EntryGuard {
-  constructor(swap) { this.swap = swap; this.rejected = null; }
+  constructor(swap, reserveFloor) { this.swap = swap; this.reserveFloor = reserveFloor; this.rejected = null; }
   observe(s) {
     if (s.pool !== this.swap.pool || s.mint !== this.swap.mint || s.slot < this.swap.slot || s.receivedAt < this.swap.receivedAt) return;
     this.check(s.price, 'stream', s.slot);
+    if (!this.rejected && Number.isFinite(this.reserveFloor) && Number.isFinite(s.liquidity) && s.liquidity <= this.reserveFloor) {
+      this.rejected = { reason: 'live_reserve_at_most_100_sol', source: 'stream', reserveSol: s.liquidity };
+    }
   }
   check(price, source, slot) {
     if (this.rejected) return this.rejected;

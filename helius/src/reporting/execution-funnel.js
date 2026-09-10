@@ -17,6 +17,8 @@ class ExecutionFunnel {
   }
   record(r) {
     const key = r.sourceSignature && r.pool ? `${r.sourceSignature}:${r.pool}` : null;
+    if (r.type === 'live_entry_policy') this.add(`livePolicyRejected:${r.reason}`, key);
+    if (r.type === 'live_entry_wait') this.add(r.stillBusy ? 'entryWaitStillBusy' : 'entryWaitReleased', key);
     if (r.type === 'live_entry_cancelled') this.add(`entryCancelled:${r.reason}`, key);
     if (r.type === 'calibration_prebuy_filter' && r.reason === 'prebuy_history_required' && r.signature && r.pool)
       this.add('historyRequiredCandidates', `${r.signature}:${r.pool}`);

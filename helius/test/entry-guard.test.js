@@ -11,7 +11,7 @@ function setup() {
   let sent = 0, built = 0;
   const ex = { async buildSwap(_, swap) { built++; return { signature: 'buy', serialized: 'unused', quoteStatePrice: swap.price }; }, async submit() { sent++; } };
   const e = new Engine(c, s, ex, { connected: true, budgetExceeded: () => false });
-  const swap = { ...parseSwaps(fixture())[0], sellSol: 10, impact: 20 };
+  const swap = { ...parseSwaps(fixture())[0], sellSol: 10, impact: 20, liquidity: 200 };
   return { e, s, ex, swap, counts: () => ({ sent, built }) };
 }
 test('live requires known trade history but permits AGE-only unknown', () => {

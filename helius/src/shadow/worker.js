@@ -54,8 +54,10 @@ parentPort.on('message', msg => {
   for (const event of msg.events) {
     if (event.type === 'state_quotes') tracker.stateQuotes(event.results);
     if (event.type === 'swap') {
+      const filterStartedAt = Date.now();
       const selection = tracker.onSwap(event.swap, event.candidate, event.fresh);
       if (event.filterId) parentPort.postMessage({ type: 'paper_filter', filterId: event.filterId,
+        queueMs: Math.max(0, filterStartedAt - (event.enqueuedAt || filterStartedAt)), computeMs: Date.now() - filterStartedAt,
         selection: selection ? { selectionId: selection.selectionId, arm: selection.arms.prebuyCombined } : null });
       reference?.onSwap(event.swap, event.candidate, event.fresh);
     }

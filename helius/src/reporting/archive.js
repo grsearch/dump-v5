@@ -22,7 +22,7 @@ function scrub(value, secrets = []) {
   return value;
 }
 function publicConfig(c) {
-  const keys = ['calibration', 'dryRun', 'paperPrebuyFilter', 'minSellSol', 'minImpact', 'maxImpact', 'minLiquidity', 'sizeSol', 'maxPositions', 'cooldownMs',
+  const keys = ['liveEntryPolicy', 'calibration', 'dryRun', 'paperPrebuyFilter', 'minSellSol', 'minImpact', 'maxImpact', 'minLiquidity', 'sizeSol', 'maxPositions', 'cooldownMs',
     'maxSignalAgeMs', 'takeProfit', 'stopLoss', 'trailArm', 'trailDrop', 'maxHoldMs', 'buySlippageBps', 'sellSlippageBps',
     'closeAfterMs', 'cleanupIntervalMs', 'blockhashMs', 'positionPollMs', 'computeUnits', 'priorityLamports', 'tipLamports',
     'maxBytesPerDay', 'maxCandidatesPerMinute'];
@@ -32,7 +32,7 @@ function publicState(data) {
   const pendingKeys = ['side', 'mint', 'signature', 'submittedAt', 'lastValidBlockHeight', 'ata', 'reason', 'createdByBot', 'warned'];
   return { calibration: data.calibration, version: data.version, mode: data.mode, wallet: data.wallet, positions: data.positions, cleanup: data.cleanup,
     pending: Object.fromEntries(Object.entries(data.pending || {}).map(([k, p]) => [k, Object.fromEntries(pendingKeys.filter(n => p[n] !== undefined).map(n => [n, p[n]]))])),
-    cooldown: data.cooldown, streamDays: data.streamDays, exitRetryBudget: data.exitRetryBudget };
+    cooldown: data.cooldown, lossCooldowns: data.lossCooldowns, streamDays: data.streamDays, exitRetryBudget: data.exitRetryBudget };
 }
 async function atomicJSON(file, data) {
   const fd = await fsp.open(`${file}.tmp`, 'w', 0o600);

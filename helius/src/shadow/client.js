@@ -7,6 +7,8 @@ class ShadowClient {
     this.status = { status: 'disabled' }; this.enabled = !!c.shadow?.enabled;
     this.queue = []; this.inFlight = false; this.scheduled = false; this.dropped = 0; this.needsGap = false;
     this.accepting = true; this.exited = false; this.drain = null;
+    this.filterTiming = { version: 1, requests: 0, responses: 0, timeouts: 0, lateResponses: 0,
+      maxQueueMs: 0, maxComputeMs: 0, maxRoundTripMs: 0 };
     this.paperFilter = (c.dryRun && c.paperPrebuyFilter) || !!c.calibration?.enabled; this.filters = new Map(); this.filterSequence = 0;
     if (!this.enabled) return;
     this.stateQuotes = new (require('./state-quotes').StateQuotes)(c);
@@ -21,7 +23,13 @@ class ShadowClient {
         resourceLimits: { maxOldGenerationSizeMb: c.calibration?.enabled ? 512 : 256 }, env: {} });
       this.status = { status: 'starting' };
       this.worker.on('message', msg => {
-        if (msg.type === 'paper_filter') this.filters.get(msg.filterId)?.(msg.selection);
+        if (msg.type === 'paper_filter') {
+          const f = this.filterTiming;
+          f.maxQueueMs = Math.max(f.maxQueueMs, msg.queueMs || 0);
+          f.maxComputeMs = Math.max(f.maxComputeMs, msg.computeMs || 0);
+          if (this.filters.has(msg.filterId)) { f.responses++; this.filters.get(msg.filterId)(msg.selection); }
+          else f.lateResponses++;
+        }
         if (msg.type === 'ack') { this.inFlight = false; this.pump(); }
         if (msg.type === 'status') this.status = msg.value;
         if (msg.type === 'state_quote_request' && this.accepting) {
@@ -50,16 +58,21 @@ class ShadowClient {
     catch (_) { this.enabled = false; this.status = { status: 'worker_send_error' }; }
   }
   observe(swap, candidate, fresh) {
+    const enqueuedAt = Date.now();
     let filterId, result;
     if (this.paperFilter && candidate && fresh && this.enabled && this.accepting && this.filters.size < 128) {
       filterId = ++this.filterSequence;
+      this.filterTiming.requests++;
       result = new Promise(resolve => {
-        const finish = value => { clearTimeout(timer); this.filters.delete(filterId); resolve(value); };
-        const timer = setTimeout(() => finish(null), 250);
+        const finish = value => {
+          this.filterTiming.maxRoundTripMs = Math.max(this.filterTiming.maxRoundTripMs, Date.now() - enqueuedAt);
+          clearTimeout(timer); this.filters.delete(filterId); resolve(value);
+        };
+        const timer = setTimeout(() => { this.filterTiming.timeouts++; finish(null); }, 250);
         this.filters.set(filterId, finish);
       });
     }
-    this.enqueue({ type: 'swap', swap: { ...swap }, candidate, fresh, filterId });
+    this.enqueue({ type: 'swap', swap: { ...swap }, candidate, fresh, filterId, enqueuedAt });
     return result;
   }
   poolCreated(event) { this.enqueue({ type: 'pool_created', event }); }
@@ -67,7 +80,7 @@ class ShadowClient {
   decision(swap, status, extra = {}) {
     this.enqueue({ type: 'decision', key: `${swap.signature}:${swap.pool}`, status, at: Date.now(), extra });
   }
-  stats() { return { ...this.status, stateQuotes: this.stateQuotes?.stats() ?? null, queueDepth: this.queue.length, dropped: this.dropped }; }
+  stats() { return { ...this.status, filterTiming: { ...this.filterTiming }, stateQuotes: this.stateQuotes?.stats() ?? null, queueDepth: this.queue.length, dropped: this.dropped }; }
   async close() {
     this.accepting = false;
     for (const finish of this.filters.values()) finish(null);

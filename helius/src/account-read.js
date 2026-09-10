@@ -4,7 +4,8 @@ async function readAccounts(rpc, keys, swap, c, log, timing = {}) {
   const now = timing.now || Date.now;
   const sleep = timing.sleep || (ms => new Promise(resolve => setTimeout(resolve, ms)));
   const started = now();
-  const deadline = Math.min(started + 700, swap.isEntry
+  const entryRetry = swap.isEntry && !!c.liveEntryPolicy;
+  const deadline = Math.min(started + (entryRetry ? 1100 : 700), swap.isEntry
     ? Math.min(swap.receivedAt + c.maxSignalAgeMs, swap.eventTime + c.maxSignalAgeMs + 1000) : Infinity);
   const requestedSlot = Number.isSafeInteger(swap.slot) && swap.slot > 0 ? swap.slot : null;
   for (let attempt = 0; ; attempt++) {
@@ -20,7 +21,7 @@ async function readAccounts(rpc, keys, swap, c, log, timing = {}) {
       return result;
     } catch (error) {
       const code = Number.isInteger(error.code) ? error.code : null;
-      const delay = [100, 200][attempt];
+      const delay = (entryRetry ? [100, 200, 300] : [100, 200])[attempt];
       const retry = code === -32016 && delay !== undefined && now() + delay < deadline;
       log('execution_account_read_failed', { method: 'getMultipleAccounts', code,
         reason: code === -32016 ? 'minimum_context_slot_not_reached' : code === 429 ? 'rate_limited' : 'rpc_or_transport_error',

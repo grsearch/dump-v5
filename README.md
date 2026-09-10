@@ -75,3 +75,17 @@ v2 新增 reasons：unsupported_pair、missing_instruction_accounts、multiple_p
 重试由现有行情/1 秒维护循环驱动，以上是最早可重试时间，不保证毫秒级发出或成交。已失败退出意图会保留，即使行情变旧或价格回升，也继续完成退出。发送超时但有待确认签名时先核对链上结果，不重建交易；其他账户的待确认交易、全局执行锁仍可能延后退出。止盈20%、止损25%、买入金额和过滤条件不变。
 
 部署后核对 starting.strategyConfig.exitRetryVersion=1；自然失败时应出现 exit_retry_scheduled（kind、fast、delayMs、预算计数），随后检查新 sell_submitted 的 triggerToSendMs 和真实回执，不能只看计划等待时间认定已恢复。没有自然失败时无该日志不算部署失败。
+
+### 实盘储备与亏损冷却（liveEntryPolicy.version=1）
+
+实盘（包括校准模式）默认启用两项额外防守，不依赖旧 .env 更新：触发砸单后的 WSOL 储备必须严格大于100 SOL（等于100也拒绝；不是TVL、美元市值或虚拟储备）。信号阶段拒绝未知/不足储备；准备期间的同池行情可取消低储备候选，执行器利用已有账户读取再次核对实际储备，不额外发起查询。现有持仓卖出不受此买入门槛影响。原始 paper/shadow 候选和研究标签保持原条件，便于比较新过滤效果。
+
+同币成功卖出且净收益为负后冷却600000ms；校准采用calibration_receipt的netPnlSol（含买卖经济成本），普通实盘采用成交解析的netPnlSol。失败交易、浮亏、未知收益、零收益、关户手续费都不触发本项。冷却从回执观察时刻计时，到期即允许；与原30秒信号冷却并存。lossCooldowns随账本持久化；升级时从校准账本恢复仍未过期的亏损记录，不因重启重新开始10分钟。可查live_loss_cooldown_started和live_entry_policy日志。
+
+合格候选遇到执行锁或待确认交易时，最多短等500ms，每池最多一个等待名额、全局16个。等待期间不预留额度、不建立交易；信号时限仍从原事件开始，释放后重查时效、持仓、冷却、继续下跌保护和卖出优先级。不会解除未知交易锁，不保证排队候选必定成交。停止/断流后候选仍由既有检查拒绝。
+
+实盘配置下的入场账户读取，仅对-32016最多增加第三次追赶（100/200/300ms，共最多4次读取），重试调度窗口上限1100ms且不得超过原信号有效期；单次网络请求超时不是1100ms保证。非-32016不盲目重试，卖出内层读取策略保持原样。额外重试可能增加少量RPC消耗，仍受候选准备每分钟6次约束。
+
+shadow_health.filterTiming新增requests/responses/timeouts/lateResponses/maxQueueMs/maxComputeMs/maxRoundTripMs，用于区分排队与计算延迟。250ms过滤器超时不放宽；maxQueueMs包含发往worker的调度和传输等待，不能直接当CPU耗时。execution-audit现有漏斗增加livePolicyRejected和entryWait分组（分组可能重叠，不可相加当候选总数）。
+
+部署后核对starting.strategyConfig.liveEntryPolicy：version=1、reserveExclusiveSol=100、lossCooldownMs=600000；exitRetryVersion=1和streamTrafficVersion=2应同时保留。模型、买入金额和止盈止损不变。导出15–30分钟验证拒绝原因、冷却及等待日志；新策略的实际盈利效果需要新数据验证。

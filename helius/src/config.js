@@ -29,6 +29,7 @@ function readConfig(env = process.env) {
   const swqos = new URL(senderUrl).searchParams.get('swqos_only') === 'true';
   const c = {
     dryRun, apiKey,
+    liveEntryPolicy: { version: 1, reserveExclusiveSol: 100, lossCooldownMs: 600000, waitMs: 500, maxWaiters: 16 },
     calibration: { enabled: calibration, maxBuys: null, lossLimitSol: null, referenceSizeSol: 1 },
     paperPrebuyFilter: bool('PAPER_PREBUY_FILTER', true),
     rpcUrl: endpoint(env.HELIUS_RPC_URL || `https://mainnet.helius-rpc.com/?api-key=${encodeURIComponent(apiKey)}`, ['https:']),

@@ -78,7 +78,7 @@ test('paper rejection still observes the candidate and live execution does not w
   assert.equal(observed, 1); assert.equal(Object.keys(store.data.positions).length, 0);
   const live = setup({ dryRun: false, paperPrebuyFilter: true }).engine;
   let built = false; live.executor = { buildSwap: async () => { built = true; throw new Error('test build'); } };
-  const buy = live.buy(parseSwaps(fixture())[0], new Promise(() => {}));
+  const buy = live.buy({ ...parseSwaps(fixture())[0], liquidity: 200 }, new Promise(() => {}));
   assert.equal(built, true); await assert.rejects(buy, /test build/);
 });
 test('budget limit, stream failure and pending tx prevent entries', async () => {
@@ -101,7 +101,7 @@ test('only expired, managed, unheld and unpending accounts can close', () => {
 });
 test('unknown submit is journaled and cannot trigger a rebuilt buy', async () => {
   const { engine, store } = setup({ dryRun: false });
-  const s = { ...parseSwaps(fixture())[0], impact: 20 };
+  const s = { ...parseSwaps(fixture())[0], impact: 20, liquidity: 200 };
   let builds = 0;
   engine.executor = {
     async buildSwap() { builds++; return { signature: 'signed', serialized: 'bytes', ata: s.ata }; },

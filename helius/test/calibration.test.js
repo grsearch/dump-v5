@@ -103,7 +103,7 @@ test('live calibration requires filter response and rejects six risk checks befo
 test('accounting entry stop still allows sells, and signed uncertain buys count once', async () => {
   const s = store(), c = config(), stream = { connected: true, budgetExceeded: () => false };
   const ex = { async buildSwap(side, swap) { return { signature: 'signed', serialized: 'bytes', ata: 'ata', quoteStatePrice: swap.price }; }, async submit() { throw new Error('uncertain'); } };
-  const e = new Engine(c, s, ex, stream), swap = { ...parseSwaps(fixture())[0], impact: 20, sellSol: 10 };
+  const e = new Engine(c, s, ex, stream), swap = { ...parseSwaps(fixture())[0], impact: 20, sellSol: 10, liquidity: 200 };
   await assert.rejects(e.buy(swap, Promise.resolve({ arm: { status: 'pass' } })), /uncertain/);
   assert.equal(JSON.parse(s.saved).calibration.attempts, 1); assert.ok(JSON.parse(s.saved).pending.signed);
   await e.buy(swap, Promise.resolve({ arm: { status: 'pass' } })); assert.equal(e.calibration.s.attempts, 1);
