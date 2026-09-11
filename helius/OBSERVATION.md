@@ -492,3 +492,9 @@ execution_token_extensions记录version=1、side、sourceSignature、pool、账�
 验证live_entry_policy的live_reserve_at_most_100_sol / live_loss_cooldown；成功亏损卖出后应有live_loss_cooldown_started，lossCooldowns保存在账本和归档快照。自然无该场景不算失败。再检查live_entry_wait与shadow_health.filterTiming，统计实际改善的成交率，不拿所有shadow反事实入场数当应买数量。
 
 原shadow selectionVersion保持7，额外实盘门槛由liveEntryPolicy单独标记；与原shadow比较时必须按sourceSignature+pool及same_size角色配对，并根据实盘拒绝/等待日志分组，不能将新实盘过滤伪装成旧selection定义。买入100 SOL边界、10分钟冷却到期和重启恢复均有本地测试；服务器要以部署后实际日志验证。
+
+## 流量诊断 v3 与归档训练部署核对
+
+重启后检查 starting.strategyConfig.streamTrafficVersion=3；既有实盘金额、止损、过滤、账本、模型均保留。15分钟导出应包含stream_traffic.version=3；自然出现未采用交易时记录有上限的stream_traffic_sample。用stream-traffic-report.js检查diagnosticSampleCount和diagnosticExamples；未出现特定原因时无样本不算部署失败。样本无额外RPC，不能据此宣称已节省网络订阅费用。
+
+离线训练命令见README的“0.05 SOL 多归档训练与后续验证”。使用全新输出目录，严格匹配session的policyId和sizeSol。训练失败或不足不发布模型；历史验证通过也不自动启用。报告中的后续窗口、未见币与currentEntryRules子集均应查看；候选代理收益不等于实盘组合收益。新增测试覆盖校验和、金额隔离、重复/冲突归档、后续评价不重拟合和流量采样上限。

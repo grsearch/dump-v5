@@ -89,3 +89,26 @@ v2 新增 reasons：unsupported_pair、missing_instruction_accounts、multiple_p
 shadow_health.filterTiming新增requests/responses/timeouts/lateResponses/maxQueueMs/maxComputeMs/maxRoundTripMs，用于区分排队与计算延迟。250ms过滤器超时不放宽；maxQueueMs包含发往worker的调度和传输等待，不能直接当CPU耗时。execution-audit现有漏斗增加livePolicyRejected和entryWait分组（分组可能重叠，不可相加当候选总数）。
 
 部署后核对starting.strategyConfig.liveEntryPolicy：version=1、reserveExclusiveSol=100、lossCooldownMs=600000；exitRetryVersion=1和streamTrafficVersion=2应同时保留。模型、买入金额和止盈止损不变。导出15–30分钟验证拒绝原因、冷却及等待日志；新策略的实际盈利效果需要新数据验证。
+
+### 0.05 SOL 多归档训练与后续验证
+
+新增离线脚本 `helius/scripts/train-calibration-archives.js`。必须指定策略 ID、金额和后续验证起点；只合并对应 `same_size` 数据，不混入 1 SOL 参考组、不用中断恢复结果替代连续训练标签。每份归档先核对 SHA256/大小，去重历史关联上下文、排除冲突记录，并剔除跨训练/验证边界的未结束样本。
+
+```bash
+node helius/scripts/train-calibration-archives.js \
+  --archive /path/to/daily-export \
+  --archive /path/to/new-window-export \
+  --policy aa6585feb6adcec2 --size-sol 0.05 \
+  --holdout-start 2026-09-11T00:00:00Z \
+  --out /path/to/new-research-run
+```
+
+`--archive` 可重复；日期是 UTC，上例为北京时间08:00。策略 ID 必须匹配归档里的 session，不能跨买卖金额/策略口径强行合并。输出目录必须不存在，避免覆盖旧模型。脚本训练 loss_25（净亏至少25%）、net_return（净收益比例）、strategy_proxy（净收益为正的分类），使用已有时间切分、标签重叠剔除和运行时范围过滤，另外固定阈值检查后续窗口与未见代币。报告 currentEntryRules 单列历史充分、原六项通过或只有AGE未知、信号储备>100 SOL的子集；不模拟冷却、持仓容量或真实成交。
+
+报告包含 SHA256 来源、缺失/删失数量、超训练范围数量与已知净收益。样本不足只输出报告；即使历史验证通过，研究模型也不自动安装、不修改 .env、不启用实盘评分。后续样本收益仍负就不能称为盈利策略。已经人工查看的时段不属于完全未见的测试集。研究模型与本地分析结果默认不提交仓库。
+
+### 流量诊断样本 v3
+
+`starting.strategyConfig.streamTrafficVersion=3`，每分钟 `stream_traffic.version=3`。对 unsupported_pair / no_amm_instruction / unsupported_amm_instruction / multiple_pool_instructions，每个原因每统计区间最多记录3条 `stream_traffic_sample`，总共最多12条；仅在命中配额时组装内容。包含公开签名、slot、有限的程序列表、代币mint和PumpSwap指令前9个账户，便于核对解析器账户位置与真实交易对。不是完整原始交易，也不包含私钥或RPC密钥。
+
+样本随既有交易日志进入COS；`stream-traffic-report.js` 汇总样本总数并附最多100个例子，兼容旧v1/v2归档。首批抽样不是随机样本，不可据其比例估计全网构成；频率应看全量reason字节统计。无额外RPC、无新订阅；本版不改变服务端过滤，所以不会自动降低Helius账单。先用这些证据确认哪些交易可安全排除，再实施订阅端优化，不能从“unsupported”字样直接屏蔽以免漏掉持仓行情或迁移。

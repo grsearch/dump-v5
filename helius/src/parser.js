@@ -116,7 +116,19 @@ function parseSwaps(result, onPoolCreated, onMigrationDiagnostic, onTraffic) {
     reasons: resultSwaps.length ? ['parsed_swap'] : swaps.length ? [...rejected]
       : [tx.instructions.some(i => i.program === PUMP && !i.data.subarray(0, 8).equals(CPI_TAG))
         ? 'unsupported_amm_instruction' : tx.instructions.some(i => i.program === PUMP) ? 'amm_event_only' : 'no_amm_instruction'],
-    pools: swaps.map(s => s.ix.accounts[0]).filter(Boolean) });
+    pools: swaps.map(s => s.ix.accounts[0]).filter(Boolean),
+    // Lazy: only materialized by the bounded traffic sampler, never for every swap.
+    diagnostic: resultSwaps.length ? null : () => ({
+      signature: result.signature, slot: result.slot,
+      hasWsolAccount: tx.keys.includes(WSOL), hasPumpAccount: tx.keys.includes(PUMP),
+      instructionCount: tx.instructions.length,
+      programs: [...new Set(tx.instructions.map(i => i.program))].slice(0, 16),
+      tokenMints: [...new Set([...(tx.meta.preTokenBalances || []), ...(tx.meta.postTokenBalances || [])].map(b => b.mint))].slice(0, 16),
+      pumpInstructions: tx.instructions.filter(i => i.program === PUMP).slice(0, 4).map(i => ({
+        discriminator: i.data.subarray(0, 8).toString('hex'), accounts: i.accounts.slice(0, 9),
+      })),
+      truncated: tx.instructions.filter(i => i.program === PUMP).length > 4,
+    }) });
   return resultSwaps;
 }
 module.exports = { normalize, decodeEvent, parseSwaps, CPI_TAG };
