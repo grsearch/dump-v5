@@ -498,3 +498,9 @@ execution_token_extensions记录version=1、side、sourceSignature、pool、账�
 重启后检查 starting.strategyConfig.streamTrafficVersion=3；既有实盘金额、止损、过滤、账本、模型均保留。15分钟导出应包含stream_traffic.version=3；自然出现未采用交易时记录有上限的stream_traffic_sample。用stream-traffic-report.js检查diagnosticSampleCount和diagnosticExamples；未出现特定原因时无样本不算部署失败。样本无额外RPC，不能据此宣称已节省网络订阅费用。
 
 离线训练命令见README的“0.05 SOL 多归档训练与后续验证”。使用全新输出目录，严格匹配session的policyId和sizeSol。训练失败或不足不发布模型；历史验证通过也不自动启用。报告中的后续窗口、未见币与currentEntryRules子集均应查看；候选代理收益不等于实盘组合收益。新增测试覆盖校验和、金额隔离、重复/冲突归档、后续评价不重拟合和流量采样上限。
+
+## 三秒反弹失败对照组部署核对
+
+session.exitResearchVersion=4，exitVariants共10组且含rebound_failure_3s；rules见README。仍为独立研究，不接入当前实盘下单。观察early_exit_assessment及对应exit_comparison，评估与退出要用id配对。触发时应有status=failed；实际退出reason仅在原退出规则未先触发时为rebound_failure_3s，净收益按延迟后的有效报价。没有自然触发不算部署失败；unavailable不能算成功反弹。
+
+首次导出检查quality.json.audit.earlyExitAssessments，以及该组的连续/恢复结果、实际evaluationLagMs和actualExitDelayMs。新评估只在same_size启用退出对照的路径记录，不将1 SOL参考副本当独立样本。原始strategy_proxy与rebound标签、原实盘规则和模型均保持原口径。

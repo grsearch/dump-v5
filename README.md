@@ -112,3 +112,15 @@ node helius/scripts/train-calibration-archives.js \
 `starting.strategyConfig.streamTrafficVersion=3`，每分钟 `stream_traffic.version=3`。对 unsupported_pair / no_amm_instruction / unsupported_amm_instruction / multiple_pool_instructions，每个原因每统计区间最多记录3条 `stream_traffic_sample`，总共最多12条；仅在命中配额时组装内容。包含公开签名、slot、有限的程序列表、代币mint和PumpSwap指令前9个账户，便于核对解析器账户位置与真实交易对。不是完整原始交易，也不包含私钥或RPC密钥。
 
 样本随既有交易日志进入COS；`stream-traffic-report.js` 汇总样本总数并附最多100个例子，兼容旧v1/v2归档。首批抽样不是随机样本，不可据其比例估计全网构成；频率应看全量reason字节统计。无额外RPC、无新订阅；本版不改变服务端过滤，所以不会自动降低Helius账单。先用这些证据确认哪些交易可安全排除，再实施订阅端优化，不能从“unsupported”字样直接屏蔽以免漏掉持仓行情或迁移。
+
+### 三秒反弹失败退出研究（exitResearchVersion=4）
+
+第10个独立退出对照组 `rebound_failure_3s`，不接入实盘卖出、不改原始shadow训练标签、不增加RPC。以代理成交入场时间为0：前三秒(0,3000]记录买卖SOL金额和笔数，最后一秒为(2000,3000]；入场时那笔交易不计入后续流量。
+
+在入场后[3000,4000]ms的第一笔有效交易报价上只评估一次，四项同时成立才触发：可卖出净收益≤-8%（扣代理费用、滑点、曲线冲击与网络费）；前三秒卖出≥2笔；卖出金额≥买入金额1.5倍且卖出金额>0；最后一秒卖出金额>买入金额。-8%、1.5倍是固定研究假设，尚非已验证的盈利参数。买方为0时仍可满足卖压条件，不做除零计算。零金额不计成交笔数。
+
+失败即进入该对照组的待退出状态，退出沿用现有500ms延迟并等待有效报价，不保证在入场后三秒整成交，也不保证按-8%卖出。普通25%止损、20%止盈、移动止盈和最长持仓仍优先有效。未满足条件则继续原退出规则，不延长持仓；不反复重判。3–4秒没有有效评估报价、无前三秒成交记录、成交金额缺失或发生行情缺口，记unavailable，不作为反弹成功。最多1秒是评估时点允许的延后，流量窗口仍固定为入场前三秒，之后买卖不得回填。
+
+新增 `early_exit_assessment`，status为failed/not_failed/unavailable/not_reached（其他退出先触发）；记录实际评估时间、净收益、买卖额/笔数、最后一秒资金流和固定规则。`not_failed`只表示未满足失败条件，不表示最终盈利。`exit_comparison`包含earlyAssessment与退出结果；行情中断后保持原标签删失，恢复组仅保留已触发意图，不从账户快照或迟到交易重新构造前三秒判断。
+
+`quality.json.audit.earlyExitAssessments`汇总评估结果；归档自动包含原始评估及退出记录。比较时按同一id、same_size、相同入场配对；分别报告触发组、未触发组、无法评估组，不能只看成功早退样本。训练模型安装、买卖金额、实盘六项过滤、储备门槛和冷却保持不变。
