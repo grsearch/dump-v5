@@ -57,6 +57,7 @@ function readConfig(env = process.env) {
     cleanupIntervalMs: num('CLEANUP_INTERVAL_MS', 60000, 1000, 3600000, true),
     blockhashMs: num('BLOCKHASH_REFRESH_MS', 15000, 1000, 25000, true),
     positionPollMs: num('POSITION_POLL_MS', 15000, 2000, 300000, true),
+    quoteTimeoutMs: num('QUOTE_TIMEOUT_MS', 10000, 1000, 300000, true),
     computeUnits: num('COMPUTE_UNIT_LIMIT', 300000, 100000, 1400000, true),
     priorityLamports: num('PRIORITY_FEE_LAMPORTS', 100000, 1, 100000000, true),
     tipLamports: num('SENDER_TIP_LAMPORTS', swqos ? 5000 : 200000, swqos ? 5000 : 200000, 100000000, true),

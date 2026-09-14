@@ -126,3 +126,8 @@ node helius/scripts/train-calibration-archives.js \
 新增 `early_exit_assessment`，status为failed/not_failed/unavailable/not_reached（其他退出先触发）；记录实际评估时间、净收益、买卖额/笔数、最后一秒资金流和固定规则。`not_failed`只表示未满足失败条件，不表示最终盈利。`exit_comparison`包含earlyAssessment与退出结果；行情中断后保持原标签删失，恢复组仅保留已触发意图，不从账户快照或迟到交易重新构造前三秒判断。
 
 `quality.json.audit.earlyExitAssessments`汇总评估结果；归档自动包含原始评估及退出记录。比较时按同一id、same_size、相同入场配对；分别报告触发组、未触发组、无法评估组，不能只看成功早退样本。训练模型安装、买卖金额、实盘六项过滤、储备门槛和冷却保持不变。
+# 实盘行情超时退出
+
+实盘持仓连续 10 秒没有有效交易流报价，即启动退出，原因记为 `quote_timeout`，面板显示“行情超时退出”。不是触发后再等 10 秒。通过现有卖单准备流程读取 Helius 最新池子账户并提交，失败沿用退出重试；RPC 补报价不重置交易流计时。已触发的退出跨行情恢复、钱包忙和进程重启保留，已触发的原止盈/止损优先。参数 `QUOTE_TIMEOUT_MS=10000` 默认生效。
+
+每秒维护检查，实际提交还受 RPC、待确认交易及重试等待影响，不保证 10 秒整成交。旧持仓没有独立交易流时间时，以原开仓时间判断，更新后可能立即启动超时退出。纸面与 Shadow 的旧估值/中断标签不变，不按旧价格伪造超时成交。部署验证见 [行情超时退出说明](helius/QUOTE-TIMEOUT.md)。
