@@ -1,5 +1,7 @@
 # 实盘行情超时退出
 
+实盘已取消固定百分比止损（starting.strategyConfig.liveFixedStopLoss=false），保留止盈、移动止盈、最长持仓和本超时退出。有效报价持续到达时不会仅因亏损达到 25% 而卖出。STOP_LOSS_PCT 仍供纸面/Shadow 对照使用，不能据此判断实盘仍有固定止损。更新前已经落盘或提交的 stop_loss 退出继续完成，新的价格评估不再产生 stop_loss。
+
 默认 `QUOTE_TIMEOUT_MS=10000`，仅作用于真实持仓（含实盘校准）。从买入确认建立持仓开始，或最后一笔有效同池交易流报价开始计时，连续满 10 秒即启动退出，不再额外等待。正常持仓的 RPC 轮询报价不刷新这个时钟。延迟到来的报价在刷新时钟前检查已发生的超时。
 
 退出原因 `quote_timeout` 贯穿 `exit_triggered`、`sell_submitted`、`sell_confirmed`、校准回执及归档，面板交易原因翻译为“行情超时退出”。`exit_triggered` 含最后交易流报价时间、发现时间、实际缺口和阈值；卖单 diagnostic 包含该诊断。

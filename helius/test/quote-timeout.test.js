@@ -50,9 +50,9 @@ test('timeout preparation errors retain intent and use normal exit retry schedul
   await assert.rejects(e.sell(p, 'quote_timeout'));
   assert.equal(p.exitRetryReason, 'quote_timeout'); assert.ok(p.retryAfter > Date.now());
 });
-test('existing stop loss and latched exit take precedence over timeout', () => {
+test('live fixed loss no longer overrides timeout; latched exits retain priority', () => {
   const { e, p } = setup(); p.lastPrice = .7; e.latchQuoteTimeout(p, Date.now());
-  assert.equal(p.exitRetryReason, 'stop_loss');
+  assert.equal(p.exitRetryReason, 'quote_timeout');
   p.exitRetryReason = 'trailing'; e.latchQuoteTimeout(p, Date.now()); assert.equal(p.exitRetryReason, 'trailing');
 });
 test('tick latches every timeout before pending transaction RPC blocks', async () => {

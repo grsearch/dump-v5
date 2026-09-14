@@ -8,7 +8,8 @@ function isSignal(s, c, now = Date.now()) {
 }
 function exitReason(position, price, c, now = Date.now()) {
   const pnl = (price / position.entryPrice - 1) * 100;
-  if (pnl <= -c.stopLoss) return 'stop_loss';
+  // Disable only live fixed stops; historical paper/shadow comparisons retain their definition.
+  if (!(c.dryRun === false && c.liveFixedStopLoss === false) && pnl <= -c.stopLoss) return 'stop_loss';
   if (pnl >= c.takeProfit) return 'take_profit';
   if (c.trailArm > 0 && (position.high / position.entryPrice - 1) * 100 >= c.trailArm && (1 - price / position.high) * 100 >= c.trailDrop) return 'trailing';
   if (now - position.openedAt >= c.maxHoldMs) return 'max_hold';

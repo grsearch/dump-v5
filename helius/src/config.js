@@ -28,7 +28,7 @@ function readConfig(env = process.env) {
   const senderUrl = endpoint(env.HELIUS_SENDER_URL || 'http://slc-sender.helius-rpc.com/fast', ['http:', 'https:']);
   const swqos = new URL(senderUrl).searchParams.get('swqos_only') === 'true';
   const c = {
-    dryRun, apiKey,
+    dryRun, apiKey, liveFixedStopLoss: false,
     freshSubscriptions: { version: 1, maxAgeMs: 1800000, exitReserveBelowSol: 50 },
     liveEntryPolicy: { version: 1, reserveExclusiveSol: 100, lossCooldownMs: 600000, waitMs: 500, maxWaiters: 16 },
     calibration: { enabled: calibration, maxBuys: null, lossLimitSol: null, referenceSizeSol: 1 },
