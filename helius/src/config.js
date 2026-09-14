@@ -30,9 +30,9 @@ function readConfig(env = process.env) {
   const c = {
     dryRun, apiKey, liveFixedStopLoss: false,
     // Separate live settings so retained .env research thresholds cannot override deployment.
-    liveExitPolicy: dryRun ? null : { version: 1, takeProfit: 10, trailArm: 8, trailDrop: 3, maxHoldMs: 20000 },
+    liveExitPolicy: dryRun ? null : { version: 2, takeProfit: 20, trailArm: 10, trailDrop: 3, maxHoldMs: 20000 },
     freshSubscriptions: { version: 1, maxAgeMs: 1800000, exitReserveBelowSol: 50 },
-    liveEntryPolicy: { version: 1, reserveExclusiveSol: 100, lossCooldownMs: 600000, waitMs: 500, maxWaiters: 16 },
+    liveEntryPolicy: { version: 2, minSellSol: 7, reserveExclusiveSol: 100, lossCooldownMs: 60000, waitMs: 500, maxWaiters: 16 },
     calibration: { enabled: calibration, maxBuys: null, lossLimitSol: null, referenceSizeSol: 1 },
     paperPrebuyFilter: bool('PAPER_PREBUY_FILTER', true),
     rpcUrl: endpoint(env.HELIUS_RPC_URL || `https://mainnet.helius-rpc.com/?api-key=${encodeURIComponent(apiKey)}`, ['https:']),
@@ -40,7 +40,7 @@ function readConfig(env = process.env) {
     senderUrl,
     privateKey: env.WALLET_PRIVATE_KEY_BS58 || '',
     stateFile: path.resolve(__dirname, '..', env.STATE_FILE || (calibration ? 'data/calibration.json' : `data/${dryRun ? 'paper' : 'live'}.json`)),
-    minSellSol: num('MIN_SELL_SOL', 8, 0.001, 1e9),
+    minSellSol: dryRun ? num('MIN_SELL_SOL', 7, 0.001, 1e9) : 7,
     minImpact: num('MIN_PRICE_IMPACT_PCT', 10, 0, 99),
     maxImpact: num('MAX_PRICE_IMPACT_PCT', 30, 0, 99),
     minLiquidity: num('MIN_POOL_QUOTE_SOL', 30, 0, 1e9),

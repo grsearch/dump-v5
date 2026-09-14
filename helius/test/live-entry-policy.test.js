@@ -5,6 +5,21 @@ const { readConfig } = require('../src/config');
 const { Engine } = require('../src/engine');
 const { fixture } = require('./fixtures');
 const { parseSwaps } = require('../src/parser');
+test('live 7 SOL boundary overrides retained 8 SOL environment configuration', () => {
+  const c=readConfig({HELIUS_API_KEY:'test',DRY_RUN:'false',WALLET_PRIVATE_KEY_BS58:'unused',MIN_SELL_SOL:'8'});
+  const s={...parseSwaps(fixture())[0],impact:20,liquidity:200};
+  assert.equal(c.minSellSol,7);assert.equal(c.liveEntryPolicy.lossCooldownMs,60000);
+  assert.equal(require('../src/strategy').isSignal({...s,sellSol:6.999999},c),false);
+  assert.equal(require('../src/strategy').isSignal({...s,sellSol:7},c),true);
+});
+test('legacy ten-minute loss cooldown shortens from original loss time exactly once', () => {
+  const c=readConfig({HELIUS_API_KEY:'test',DRY_RUN:'false',WALLET_PRIVATE_KEY_BS58:'unused'});
+  const store={data:{lossCooldowns:{recent:600000+90000,expired:600000+1000},cooldown:{recent:999999}},save(){},log(){}};
+  const {migrateCooldown}=require('../src/live-entry-policy');migrateCooldown(c,store,100000);
+  assert.equal(store.data.lossCooldowns.recent,150000);assert.equal(store.data.lossCooldowns.expired,undefined);
+  migrateCooldown(c,store,100001);assert.equal(store.data.lossCooldowns.recent,150000);
+  assert.equal(store.data.cooldown.recent,999999);
+});
 function setup() {
   const c = readConfig({ HELIUS_API_KEY: 'test', DRY_RUN: 'false', LIVE_CALIBRATION: 'true', WALLET_PRIVATE_KEY_BS58: 'unused' });
   const store = { data: { wallet: 'w', positions: {}, cleanup: {}, pending: {}, seen: {}, cooldown: {} }, logs: [], save() {}, log(type, r) { this.logs.push({ type, ...r }); } };
@@ -30,8 +45,8 @@ test('only confirmed net losses arm a per-mint cooldown, with exact expiry and n
   assert.equal(data.lossCooldowns, undefined);
   const loss = { side: 'sell', status: 'confirmed', mint: 'm', receiptObservedAt: 1000, netPnlSol: -.00001 };
   recordLoss(c, data, loss); recordLoss(c, data, loss);
-  assert.equal(reason(c, data, { mint: 'm', liquidity: 200 }, 600999), 'live_loss_cooldown');
-  assert.equal(reason(c, data, { mint: 'm', liquidity: 200 }, 601000), null);
+  assert.equal(reason(c, data, { mint: 'm', liquidity: 200 }, 60999), 'live_loss_cooldown');
+  assert.equal(reason(c, data, { mint: 'm', liquidity: 200 }, 61000), null);
   assert.equal(reason(c, data, { mint: 'other', liquidity: 200 }, 1001), null);
 });
 test('restart restores unexpired cooldown from prior calibration receipts', () => {
@@ -39,7 +54,7 @@ test('restart restores unexpired cooldown from prior calibration receipts', () =
   h.store.data.calibration.transactions.s = { mint: 'm', side: 'sell', status: 'confirmed', receiptObservedAt: observed, netPnlSol: -.01 };
   const restored = JSON.parse(JSON.stringify(h.store.data));
   const e = new Engine(h.c, { ...h.store, data: restored }, h.executor, h.engine.stream);
-  assert.equal(e.data.lossCooldowns.m, observed + 600000);
+  assert.equal(e.data.lossCooldowns.m, observed + 60000);
 });
 test('short contention wait can resume, rechecks cooldown, and never duplicates pending signatures', async () => {
   const h = setup(); h.engine.busy = true;
@@ -80,7 +95,7 @@ test('confirmed losing sell persists cooldown before a later candidate can enter
   h.store.data.positions[f.mint] = { ...swap, rawAmount: '250000000', entrySol: 30, openedAt: Date.now(), buySignature: 'original' };
   h.engine.applyReceipt({ side: 'sell', signature: f.signature, mint: f.mint, ata: f.ata, swap, submittedAt: Date.now() },
     { ...f.transaction, slot: f.slot });
-  assert.ok(h.store.data.lossCooldowns[f.mint] > Date.now() + 599000);
+  assert.ok(h.store.data.lossCooldowns[f.mint] > Date.now() + 59000);
   await h.engine.buy({ ...swap, liquidity: 200 }); assert.equal(h.builds(), 0);
   assert.equal(h.store.logs.at(-1).reason, 'live_loss_cooldown');
 });

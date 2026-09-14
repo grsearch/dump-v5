@@ -13,4 +13,18 @@ function recordLoss(c, data, receipt) {
   data.lossCooldowns[receipt.mint] = Math.max(data.lossCooldowns[receipt.mint] || 0,
     receipt.receiptObservedAt + c.liveEntryPolicy.lossCooldownMs);
 }
-module.exports = { reason, recordLoss };
+function migrateCooldown(c, store, now = Date.now()) {
+  if (c.dryRun || !c.liveEntryPolicy) return;
+  const data = store.data, previousMs = data.lossCooldownDurationMs ?? 600000, durationMs = c.liveEntryPolicy.lossCooldownMs;
+  if (previousMs === durationMs) return;
+  let changed = 0;
+  for (const [mint, until] of Object.entries(data.lossCooldowns || {})) {
+    if (!Number.isFinite(until)) continue;
+    const adjusted = Math.min(until, until - previousMs + durationMs);
+    if (adjusted <= now) delete data.lossCooldowns[mint]; else data.lossCooldowns[mint] = adjusted;
+    if (adjusted !== until) changed++;
+  }
+  data.lossCooldownDurationMs = durationMs; store.save();
+  if (changed) store.log('live_loss_cooldown_migrated', { previousMs, durationMs, changed });
+}
+module.exports = { reason, recordLoss, migrateCooldown };

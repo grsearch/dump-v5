@@ -19,6 +19,7 @@ class Engine {
     this.calibration = new (require('./calibration'))(config, store);
     this.entryGuards = new Map();
     this.entryWaiters = new Set();
+    require('./live-entry-policy').migrateCooldown(config, store);
     for (const receipt of Object.values(this.data.calibration?.transactions || {})) {
       if (receipt.receiptObservedAt + (config.liveEntryPolicy?.lossCooldownMs || 0) > Date.now())
         require('./live-entry-policy').recordLoss(config, this.data, receipt);

@@ -10,11 +10,11 @@ const env = { HELIUS_API_KEY: 'test', WALLET_PRIVATE_KEY_BS58: 'test', DRY_RUN: 
 const c = readConfig(env), p = { entryPrice: 100, high: 100, openedAt: 1000 };
 test('live and calibration use new exit thresholds despite retained legacy env settings', () => {
   for (const config of [c, readConfig({ ...env, LIVE_CALIBRATION: 'true' })]) {
-    assert.deepEqual(config.liveExitPolicy, { version: 1, takeProfit: 10, trailArm: 8, trailDrop: 3, maxHoldMs: 20000 });
-    assert.equal(exitReason(p, 109.99, config, 2000), null);
-    assert.equal(exitReason(p, 110, config, 2000), 'take_profit');
-    assert.equal(exitReason({ ...p, high: 108 }, 104.75, config, 2000), 'trailing');
-    assert.equal(exitReason({ ...p, high: 107.99 }, 104, config, 2000), null);
+    assert.deepEqual(config.liveExitPolicy, { version: 2, takeProfit: 20, trailArm: 10, trailDrop: 3, maxHoldMs: 20000 });
+    assert.equal(exitReason(p, 119.99, config, 2000), null);
+    assert.equal(exitReason(p, 120.01, config, 2000), 'take_profit');
+    assert.equal(exitReason({ ...p, high: 110 }, 106.69, config, 2000), 'trailing');
+    assert.equal(exitReason({ ...p, high: 109.99 }, 104, config, 2000), null);
     assert.equal(exitReason(p, 50, config, 20999), null);
     assert.equal(exitReason(p, 50, config, 21000), 'max_hold');
     assert.equal(publicConfig(config).liveExitPolicy.maxHoldMs, 20000);
