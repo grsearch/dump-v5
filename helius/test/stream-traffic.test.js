@@ -99,8 +99,8 @@ test('websocket telemetry accounts every message including stale and malformed m
   const Stream = require('../src/stream');
   const stream = new Stream({ wsUrl: `ws://127.0.0.1:${server.address().port}`, maxBytesPerDay: 0 }, { data, log: (type, r) => logs.push({ type, ...r }) });
   const packets = [JSON.stringify({ id: 1, result: 1 }), '{bad',
-    JSON.stringify({ method: 'transactionNotification', params: { result: { slot: 100 } } }),
-    JSON.stringify({ method: 'transactionNotification', params: { result: { slot: 1 } } })];
+    JSON.stringify({ method: 'transactionNotification', params: { subscription: 1, result: { slot: 100 } } }),
+    JSON.stringify({ method: 'transactionNotification', params: { subscription: 1, result: { slot: 1 } } })];
   server.on('connection', ws => ws.once('message', () => packets.forEach(p => ws.send(p))));
   stream.on('transaction', tx => { tx.traffic = { category: 'parsed_sell', pools: ['p'] }; });
   try {

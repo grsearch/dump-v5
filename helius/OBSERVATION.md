@@ -1,5 +1,9 @@
 # 观察模型、执行对照与迁移 AGE分析
 
+## 新毕业池动态订阅 v1
+
+本版本改变候选采集范围，旧全市场样本与新数据不得直接比较频率。启动和session的`freshSubscriptions.version=1`，规则`maxAgeMs=1800000`、`exitReserveBelowSol=50`。部署后按 [FRESH-SUBSCRIPTIONS.md](FRESH-SUBSCRIPTIONS.md) 核对发现、储备未知转已知、永久关闭和持仓保护。选择规则仍是selectionVersion=7，买前/退出阈值未放宽；订阅范围是额外的外层条件。
+
 ## 小额实盘校准（默认关闭）
 
 ### 紧急修复：失败回执阻塞退出

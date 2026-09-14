@@ -1,0 +1,28 @@
+# 新毕业池动态订阅 v1
+
+只连接Helius，默认直接生效，不变更DRY_RUN或校准金额。新买入仅允许已验证Pump毕业迁移AGE在[0,30)分钟的池，满30分钟退出。首次有效真实SOL报价金库储备<50 SOL即关闭新入场，不设延时、不重新准入；恰好50不关闭。原实盘储备>100及六项过滤、历史热身、冷却和退出规则继续执行。保留模型及账本。
+
+## 首次余额可能未知
+
+严格迁移事件只证明毕业，不保证附带可用余额。解析器从同笔经过账户校验的migrate/migrate_v2中取得pool_quote_token_account，在postTokenBalances精确匹配WSOL和9位精度。缺失、币种不匹配或余额字段无效时reserveSol=null，不能按0解释。该池保持动态订阅，直到后续匹配金库余额或有效swap提供储备；未知期间不买入，最长观察到毕业30分钟。不新增轮询RPC，不凭事件中总迁移金额推测池储备。完全没有有效余额的池会自然到期。
+
+后续包含该金库的已订阅交易，即使不是可采用的单池swap，也会检查交易后余额。只有可验证余额或有效解析swap更新储备；没有记录的链上中间状态、断线期间瞬时跌破并恢复无法追溯确认。关闭记录落在运行账本freshPools，重连和重启不重开，重复迁移不能清除关闭状态。一天后可清理已过期状态，其迁移年龄已超过准入上限，仍无法再次加入。
+
+## 服务端两路过滤
+
+发现通道：transactionSubscribe.accountRequired=[PumpFun程序,PumpSwap程序]，AND匹配，不是OR。严格迁移解析已要求指令中的PumpSwap账户匹配，因此保留当前受支持迁移的必要账户条件。这是缩小后的发现通道，仍可能含聚合路由等非迁移交易；不是零成本的专用迁移推送，也不能仅凭账户引用信任毕业。
+
+行情通道：accountInclude=[动态池集合]且accountRequired=[PumpSwap程序]。新订阅成功后才移除旧订阅，重叠消息由交易签名去重；每秒更新池集合并检查10秒响应期限，订阅错误/超时重连，禁止静默丢失订阅。新池刚发现到服务端订阅生效有延迟，买前历史仍必须热身。首次安装没有freshPools账本时不回填过去30分钟的新池；已有版本重启恢复账本中的活跃池。断线期间漏掉的迁移不自动补查。
+
+positions与pending.swap.pool/pending.pool保护行情订阅，包括更新前已有的老币持仓。年龄到期或储备跌破也只停止新买入，持仓原退出管理继续。成交发送前再次检查池准入，避免等待或构建期间到期仍发买单。研究候选同样限于准入池；无真实持仓保护的纯Shadow研究可能因退订而缺报价，原缺失/删失标签保留，不能视为平仓或盈利。
+
+## 更新后核对
+
+1. 按原部署流程运行测试、安装、重启；不要清空交易账本或freshPools。确认原持仓和待确认交易被恢复。
+2. starting.strategyConfig.freshSubscriptions.version及新session.freshSubscriptions.version均为1。
+3. stream_connected.freshSubscriptionVersion=1。fresh_pool_discovered包含经验证的新池，reserveStatus初始为unknown；随后有效余额产生fresh_pool_reserve_known，或者直接fresh_pool_closed(reason=reserve_below_50)。同一发现处理内可能马上解决unknown。
+4. fresh_pool_subscription报告服务端行情池数；满30分钟或有效余额<50出现fresh_pool_closed。已经关闭的池即使仍因持仓保护被订阅，也不会重新买入。平仓及确认结束后自动移出。
+5. fresh_subscription_health每分钟报告active/reserveUnknown/closed/subscribedPools及channelBytes.discovery/pools/control。stream_traffic和streamDays继续统计全部接收字节（包括重叠推送和解析拒绝）。分通道记录为进程内区间值，非Helius账单；异常退出可丢失最后不足一分钟的分通道统计。
+6. 导出15–30分钟数据验证迁移、余额状态和入场，再观察至少30分钟验证年龄到期。没有自然出现储备<50不代表故障；不要为测试制造真实交易。实际节费比例必须和可比时间窗的总字节及Helius账单对照，不能承诺固定比例。
+
+归档publicState包含freshPools（均为公开池和交易信息），不包含钱包密钥或签名交易字节。若部署后无新池发现，检查订阅错误和migration_diagnostic，不要直接恢复全量后声称节费生效。

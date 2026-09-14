@@ -59,10 +59,11 @@ function decodeEvent(data, schema = layout) {
   return out.pool && out.user && (out.user_quote_amount_out !== undefined || out.user_quote_amount_in !== undefined) ? out : null;
 }
 
-function parseSwaps(result, onPoolCreated, onMigrationDiagnostic, onTraffic) {
+function parseSwaps(result, onPoolCreated, onMigrationDiagnostic, onTraffic, onNormalized) {
   const tx = normalize(result);
   if (!tx) return [];
   if (onPoolCreated) migrations(tx, decodeEvent, onPoolCreated, onMigrationDiagnostic);
+  if (onNormalized) onNormalized(tx);
   const events = tx.instructions.filter(i => i.program === PUMP && i.data.subarray(0, 8).equals(CPI_TAG))
     .map(i => decodeEvent(i.data.subarray(8))).filter(Boolean);
   for (const e of events) if (e.name === 'CreatePoolEvent' && e.quote_mint === WSOL && e.base_mint !== WSOL) {

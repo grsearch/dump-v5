@@ -15,6 +15,7 @@ async function main() {
   const stream = new Stream(config, store);
   const shadow = new ShadowClient(config);
   const engine = new Engine(config, store, executor, stream, shadow);
+  for (const p of Object.values(stream.fresh.pools)) if (!p.closedReason && p.event) shadow.poolCreated(p.event);
   store.log('starting', { mode: config.dryRun ? 'paper' : 'live', minSellSol: config.minSellSol, closeAfterMs: config.closeAfterMs,
     strategyConfig: publicConfig(config) });
   try {

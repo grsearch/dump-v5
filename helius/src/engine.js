@@ -33,15 +33,17 @@ class Engine {
     this.seen.set(result.signature, Date.now()); this.ticks++;
     if (this.seen.size > 20000) this.seen.delete(this.seen.keys().next().value);
     let migrationMatched = false;
-    for (const swap of parseSwaps(result, event => this.shadowEvent('poolCreated', event), d => {
+    for (const swap of parseSwaps(result, event => { this.stream.fresh?.created(event); this.shadowEvent('poolCreated', event); }, d => {
       if (d.stage === 'migration_matched' && d.count > 0) migrationMatched = true;
       this.migrationDiagnostics[d.stage] = (this.migrationDiagnostics[d.stage] || 0) + d.count;
       if (d.signature && this.migrationDiagnosticSamples < 20) {
         this.migrationDiagnosticSamples++; this.store.log('migration_diagnostic', d);
       }
-    }, info => { result.traffic = migrationMatched ? { ...info, category: 'verified_migration', reasons: ['verified_migration'] } : info; })) {
+    }, info => { result.traffic = migrationMatched ? { ...info, category: 'verified_migration', reasons: ['verified_migration'] } : info; }, tx => this.stream.fresh?.transaction(tx))) {
       this.swaps++;
-      const filter = this.shadowEvent('observe', swap, matchesBaseSignal(swap, this.c), isSignal(swap, this.c));
+      this.stream.fresh?.reserve(swap.pool, swap.liquidity, swap.slot);
+      const admitted = !this.stream.fresh?.reason(swap);
+      const filter = this.shadowEvent('observe', swap, admitted && matchesBaseSignal(swap, this.c), admitted && isSignal(swap, this.c));
       const previous = this.lastSlots.get(swap.pool);
       if (previous && swap.slot < previous.slot) continue;
       for (const guard of this.entryGuards.values()) guard.observe(swap);
@@ -57,7 +59,7 @@ class Engine {
         const reason = exitReason(p, swap.price, this.c);
         if (reason) this.sell(p, reason).catch(e => this.error('sell', e));
       }
-      if (isSignal(swap, this.c)) this.buy(swap, filter).catch(e => this.error('buy', e));
+      if (admitted && isSignal(swap, this.c)) this.buy(swap, filter).catch(e => this.error('buy', e));
     }
   }
   error(stage, err) {
@@ -76,6 +78,7 @@ class Engine {
     finally { this.entryGuards.delete(token); }
   }
   async prepareBuy(swap, filter, guard) {
+    if (this.stream.fresh?.reason(swap)) return;
     const policyReason = require('./live-entry-policy').reason(this.c, this.data, swap);
     if (policyReason) {
       this.store.log('live_entry_policy', { version: 1, mint: swap.mint, pool: swap.pool, sourceSignature: swap.signature,
@@ -114,6 +117,7 @@ class Engine {
       this.shadowEvent('decision', swap, 'skipped', { reason: policyAfterWait }); return;
     }
     const now = Date.now();
+    if (this.stream.fresh?.reason(swap, now)) return;
     const reason = this.calibration.reason() || (this.stopped ? 'stopped' : this.busy ? 'wallet_busy' : this.reconciling ? 'reconciling'
       : this.pending() ? 'pending_transaction' : this.exitDue() ? 'exit_priority' : !this.stream.connected ? 'stream_disconnected'
         : this.stream.budgetExceeded() ? 'stream_budget' : this.data.positions[swap.mint] ? 'already_held'
@@ -139,6 +143,7 @@ class Engine {
         this.shadowEvent('decision', swap, 'paper_buy'); return;
       }
       const built = await this.executor.buildSwap('buy', swap);
+      if (this.stream.fresh?.reason(swap)) return;
       if (guard && rejectGuard(guard.check(built.quoteStatePrice, 'rpc_state', built.quoteStateSlot))) return;
       if (this.stopped || !this.stream.connected || !isSignal(swap, this.c)) {
         this.store.log('signal_expired_before_send', { mint: swap.mint });
