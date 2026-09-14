@@ -12,8 +12,8 @@ class Recovery {
       ...(r.arm.earlyFailure ? { earlyFailure: r.arm.earlyFailure } : {}),
       quickTakePct: r.arm.quickTakePct ?? null, quickWindowMs: r.arm.quickWindowMs ?? null,
       quickTakeBasis: r.arm.quickWindowMs ? 'price_from_proxy_entry' : null,
-      stopLossPct: r.arm.noFixedStop ? null : this.c.stopLoss, trailArmPct: this.c.trailArm, trailDropPct: this.c.trailDrop,
-      maxHoldMs: this.c.maxHoldMs, exitDelayMs: r.arm.delay ?? this.c.exitDelayMs, netTakePct: r.arm.netTake ?? null },
+      stopLossPct: r.arm.noFixedStop ? null : this.c.stopLoss, trailArmPct: r.arm.trailArm ?? this.c.trailArm, trailDropPct: r.arm.trailDrop ?? this.c.trailDrop,
+      maxHoldMs: r.arm.maxHoldMs ?? this.c.maxHoldMs, exitDelayMs: r.arm.delay ?? this.c.exitDelayMs, netTakePct: r.arm.netTake ?? null },
     quoteSlot: r.quoteSlot ?? null, quoteRequestAt: r.quoteRequestAt ?? null,
     selection: r.selection, entryAt: r.entry.at, entryCostSol: r.entry.cost, coverage: 'discontinuous',
     ...(r.arm.earlyFailure ? { earlyAssessment: r.arm.failureState?.assessment ?? { status: 'unavailable', reason: 'coverage_gap_before_assessment' } } : {}),
@@ -32,7 +32,7 @@ class Recovery {
     if (a.done || this.active.has(mapKey)) return;
     const r = { id: s.id, mapKey, arm: a, key: s.key, selection: s.selection, source: { ...s.last }, pool: s.source.pool, entry: { ...s.entry },
       position: { ...a.position }, pending: a.pending && { ...a.pending }, gapReason: reason, gapAt: at,
-      deadlineAt: s.entry.at + this.c.maxHoldMs, firstQuoteAt: null, min: null, max: null,
+      deadlineAt: s.entry.at + (a.maxHoldMs ?? this.c.maxHoldMs), firstQuoteAt: null, min: null, max: null,
       lastSignature: s.last?.signature, lastSlot: s.last?.slot ?? s.entry.slot, lastAt: at };
     if (at > this.expiresAt(r)) return;
     if (this.active.size >= this.c.maxActive || (this.byPool.get(r.pool)?.size || 0) >= this.c.maxActivePerPool) {

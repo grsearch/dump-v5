@@ -8,8 +8,11 @@ const ARMS = [{ name: 'exit_250ms', delay: 250 }, { name: 'exit_1000ms', delay: 
   { name: 'take30_no_stop', takeProfit: 30, noFixedStop: true },
   { name: 'take50_no_stop', takeProfit: 50, noFixedStop: true },
   { name: 'take8_first3s', quickTakePct: 8, quickWindowMs: 3000 },
-  { name: 'rebound_failure_3s', earlyFailure: earlyFailure.RULES }];
-function armConfig(c, a) { return { ...c, takeProfit: a.takeProfit ?? c.takeProfit, stopLoss: a.noFixedStop ? Infinity : c.stopLoss }; }
+  { name: 'rebound_failure_3s', earlyFailure: earlyFailure.RULES },
+  { name: 'fast_exit_20s', takeProfit: 10, trailArm: 8, trailDrop: 3, maxHoldMs: 20000, noFixedStop: true },
+  { name: 'fast_exit_20s_failure_3s', takeProfit: 10, trailArm: 8, trailDrop: 3, maxHoldMs: 20000, noFixedStop: true, earlyFailure: earlyFailure.RULES }];
+function armConfig(c, a) { return { ...c, takeProfit: a.takeProfit ?? c.takeProfit, trailArm: a.trailArm ?? c.trailArm,
+  trailDrop: a.trailDrop ?? c.trailDrop, maxHoldMs: a.maxHoldMs ?? c.maxHoldMs, stopLoss: a.noFixedStop ? Infinity : c.stopLoss }; }
 function armExitReason(c, a, position, price, netPct, at) {
   const age = at - position.openedAt;
   if (a.quickWindowMs && age >= 0 && age <= a.quickWindowMs
@@ -38,9 +41,9 @@ class ExitComparisons {
       variant: a.name, selection: s.selection ?? null, assumptions: { exitDelayMs: a.delay ?? this.c.exitDelayMs, netTakePct: a.netTake ?? null,
         ...(a.earlyFailure ? { earlyFailure: a.earlyFailure } : {}),
         quickTakePct: a.quickTakePct ?? null, quickWindowMs: a.quickWindowMs ?? null, quickTakeBasis: a.quickWindowMs ? 'price_from_proxy_entry' : null,
-        sameEntryAsBaseline: true, baselinePolicy: 'envelope_policyId', maxHoldMs: this.c.maxHoldMs,
+        sameEntryAsBaseline: true, baselinePolicy: 'envelope_policyId', maxHoldMs: a.maxHoldMs ?? this.c.maxHoldMs,
         fixedStopEnabled: !a.noFixedStop, stopLossPct: a.noFixedStop ? null : this.c.stopLoss,
-        takeProfitPct: a.takeProfit ?? this.c.takeProfit, trailArmPct: this.c.trailArm, trailDropPct: this.c.trailDrop },
+        takeProfitPct: a.takeProfit ?? this.c.takeProfit, trailArmPct: a.trailArm ?? this.c.trailArm, trailDropPct: a.trailDrop ?? this.c.trailDrop },
       entryCostSol: s.entry?.cost ?? null, minNetPct: a.minNetPct ?? null, maxNetPct: a.maxNetPct ?? null,
       firstFixedStopAt: a.firstFixedStopAt ?? null,
       ...(a.earlyFailure ? { earlyAssessment: a.failureState.assessment } : {}), ...fields });
@@ -73,7 +76,7 @@ class ExitComparisons {
     for (const a of this.states(s)) if (a.earlyFailure && !a.done && !a.pending
       && at - s.entry.at > a.earlyFailure.evaluateAfterMs + a.earlyFailure.maxEvaluationLagMs)
       this.assessment(s, a, earlyFailure.finish(a.failureState, 'unavailable', 'no_timely_evaluation_quote', at, s.entry.at));
-    for (const a of this.states(s)) if (!a.done && !a.pending && at - s.entry.at >= this.c.maxHoldMs)
+    for (const a of this.states(s)) if (!a.done && !a.pending && at - s.entry.at >= (a.maxHoldMs ?? this.c.maxHoldMs))
       a.pending = { reason: 'max_hold', at, dueAt: at + (a.delay ?? this.c.exitDelayMs) };
   }
   censor(s, reason, at) {

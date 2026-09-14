@@ -42,7 +42,7 @@ test('exit arms await observed delayed ticks, retain unknown gaps and never muta
   assert.equal(events[0].variant, 'exit_250ms'); assert.ok(Math.abs(events[0].netPnlSol + 0.15) < 1e-9);
   comparisons.censor(sample, 'pool_observation_gap', 1300);
   const exits = events.filter(r => r.type === 'exit_comparison');
-  assert.equal(exits.length, 10); assert.equal(exits.filter(r => r.status === 'censored').length, 9);
+  assert.equal(exits.length, 12); assert.equal(exits.filter(r => r.status === 'censored').length, 11);
   assert.ok(exits.filter(r => r.status === 'censored').every(r => r.netPnlSol === null));
 });
 

@@ -7,6 +7,7 @@ function isSignal(s, c, now = Date.now()) {
     && now - s.eventTime <= c.maxSignalAgeMs + 1000 && s.eventTime <= now + 2000;
 }
 function exitConfig(c) { return c.dryRun === false && c.liveExitPolicy ? { ...c, ...c.liveExitPolicy } : c; }
+function holdingStart(position) { return position.holdingStartedAt ?? position.openedAt; }
 function exitReason(position, price, c, now = Date.now()) {
   c = exitConfig(c);
   const pnl = (price / position.entryPrice - 1) * 100;
@@ -14,7 +15,7 @@ function exitReason(position, price, c, now = Date.now()) {
   if (!(c.dryRun === false && c.liveFixedStopLoss === false) && pnl <= -c.stopLoss) return 'stop_loss';
   if (pnl >= c.takeProfit) return 'take_profit';
   if (c.trailArm > 0 && (position.high / position.entryPrice - 1) * 100 >= c.trailArm && (1 - price / position.high) * 100 >= c.trailDrop) return 'trailing';
-  if (now - position.openedAt >= c.maxHoldMs) return 'max_hold';
+  if (now - holdingStart(position) >= c.maxHoldMs) return 'max_hold';
   return null;
 }
-module.exports = { matchesBaseSignal, isSignal, exitReason, exitConfig };
+module.exports = { matchesBaseSignal, isSignal, exitReason, exitConfig, holdingStart };

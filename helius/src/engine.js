@@ -2,7 +2,7 @@
 const { PublicKey } = require('@solana/web3.js');
 const { normalize, parseSwaps } = require('./parser');
 
-const { isSignal, matchesBaseSignal, exitReason, exitConfig } = require('./strategy');
+const { isSignal, matchesBaseSignal, exitReason, exitConfig, holdingStart } = require('./strategy');
 
 function canClose(item, data, now) {
   return item.createdByBot && item.dueAt <= now && !data.positions[item.mint]
@@ -210,9 +210,11 @@ class Engine {
           accountingVersion: 'paper_spot_v1', grossPnlSol: Number(p.rawAmount) * p.lastPrice - p.entrySol, diagnostic });
         delete this.data.positions[p.mint]; this.store.save(); return;
       }
-      const built = await this.executor.buildSwap('sell', p, p.rawAmount);
+      // Freeze execution identity before awaiting RPC; live quotes keep mutating the position.
+      const executionSwap = { ...p };
+      const built = await this.executor.buildSwap('sell', executionSwap, p.rawAmount);
       if (this.stopped) return;
-      const pending = { ...built, side: 'sell', mint: p.mint, reason, swap: p, diagnostic, submittedAt: Date.now() };
+      const pending = { ...built, side: 'sell', mint: p.mint, reason, swap: executionSwap, diagnostic, submittedAt: Date.now() };
       this.data.pending[pending.signature] = pending; this.store.save();
       const sendAt = Date.now();
       await this.executor.submit(pending);
@@ -314,15 +316,22 @@ class Engine {
       if (!ownSwap) throw new Error('Confirmed buy missing PumpSwap fill event; manual reconciliation required');
       const entrySol = ownSwap.quoteSol + Number(receipt.meta.fee) / 1e9 + this.c.tipLamports / 1e9;
       const entryPrice = entrySol / Number(acquired);
-      actual = { entrySol, rawAcquired: acquired.toString(), quoteSol: ownSwap.quoteSol };
+      const confirmedAt = Date.now();
+      // Durable pre-send journal time is a conservative exposure bound, not a claimed landing timestamp.
+      const holdingStartedAt = Number.isFinite(p.submittedAt) && p.submittedAt > 0 && p.submittedAt <= confirmedAt ? p.submittedAt : confirmedAt;
+      actual = { entrySol, rawAcquired: acquired.toString(), quoteSol: ownSwap.quoteSol,
+        holdingStartedAt, holdingClockVersion: 2, holdingClockBasis: holdingStartedAt === confirmedAt ? 'confirmation_fallback' : 'submission_journal',
+        confirmationWaitMs: confirmedAt - holdingStartedAt };
       this.data.positions[p.mint] = { ...p.swap, rawAmount: acquired.toString(), ata: p.ata, createdByBot: p.createdByBot,
-        entrySol, entryPrice, high: entryPrice, lastPrice: ownSwap.price, lastPriceAt: Date.now(), lastStreamQuoteAt: Date.now(), openedAt: Date.now(), buySignature: p.signature };
+        entrySol, entryPrice, high: entryPrice, lastPrice: ownSwap.price, lastPriceAt: confirmedAt, lastStreamQuoteAt: confirmedAt,
+        openedAt: confirmedAt, holdingStartedAt, holdingClockVersion: 2, holdingClockBasis: actual.holdingClockBasis, buySignature: p.signature };
       delete this.data.cleanup[p.mint];
     } else {
       const position = this.data.positions[p.mint];
       if (!position || pre - post < BigInt(position.rawAmount)) throw new Error('Sell fill does not match tracked amount; manual reconciliation required');
       const fill = parseSwaps(result).find(s => s.pool === p.swap.pool && s.side === 'sell');
       actual = { buySignature: position.buySignature, openedAt: position.openedAt, heldMs: Date.now() - position.openedAt,
+        holdingStartedAt: holdingStart(position), exposureMs: Date.now() - holdingStart(position), holdingClockVersion: position.holdingClockVersion || 1,
         entrySol: position.entrySol, reason: p.reason, rawSold: (pre - post).toString(), quoteSol: fill?.quoteSol ?? null,
         netPnlSol: fill ? fill.quoteSol - Number(receipt.meta.fee) / 1e9 - this.c.tipLamports / 1e9 - position.entrySol : null };
       const economicReceipt = this.calibration.s?.transactions[p.signature];
@@ -404,7 +413,7 @@ class Engine {
       for (const p of Object.values(this.data.positions)) {
         const fresh = Date.now() - p.lastPriceAt <= Math.max(5000, this.c.positionPollMs * 2);
         const reason = p.exitRetryReason || (fresh ? exitReason(p, p.lastPrice, this.c)
-          : Date.now() - p.openedAt >= exitConfig(this.c).maxHoldMs ? 'max_hold' : null);
+          : Date.now() - holdingStart(p) >= exitConfig(this.c).maxHoldMs ? 'max_hold' : null);
         if (reason) await this.sell(p, reason);
       }
       if (Date.now() - this.lastPoll >= this.c.positionPollMs) { this.lastPoll = Date.now(); await this.pollPositions(); }
@@ -419,7 +428,7 @@ class Engine {
     if (!Number.isFinite(last) || now - last < this.c.quoteTimeoutMs) return;
     const fresh = now - p.lastPriceAt <= Math.max(5000, this.c.positionPollMs * 2);
     const reason = p.exitDiagnostic?.reason || (fresh ? exitReason(p, p.lastPrice, this.c, now)
-      : now - p.openedAt >= exitConfig(this.c).maxHoldMs ? 'max_hold' : null) || 'quote_timeout';
+      : now - holdingStart(p) >= exitConfig(this.c).maxHoldMs ? 'max_hold' : null) || 'quote_timeout';
     p.exitRetryReason = reason;
     p.quoteTimeout = { version: 1, detectedAt: now, lastStreamQuoteAt: last, gapMs: now - last, thresholdMs: this.c.quoteTimeoutMs };
     this.store.save();

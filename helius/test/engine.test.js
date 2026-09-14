@@ -26,6 +26,18 @@ function setup(extra = {}) {
   const stream = { connected: true, budgetExceeded: () => false };
   return { store, stream, engine: new Engine({ ...c, paperPrebuyFilter: false, ...extra }, store, {}, stream) };
 }
+test('confirmed buy keeps durable submission time as exposure clock through restore', () => {
+  const {engine,store}=setup({dryRun:false}); const buy=fixture({side:'buy'}),submittedAt=Date.now()-1500;
+  engine.applyReceipt({side:'buy',signature:buy.signature,mint:buy.mint,ata:buy.ata,swap:parseSwaps(buy)[0],submittedAt}, {...buy.transaction,slot:buy.slot});
+  const p=store.data.positions[buy.mint];assert.equal(p.holdingStartedAt,submittedAt);assert.ok(p.openedAt>=submittedAt+1500);
+  const restored=new Engine(engine.c,store,{},{});assert.equal(restored.data.positions[buy.mint].holdingStartedAt,submittedAt);
+  assert.equal(exitReason(p,p.entryPrice,{...engine.c,liveExitPolicy:{maxHoldMs:20000,takeProfit:10,trailArm:8,trailDrop:3}},submittedAt+20000),'max_hold');
+});
+test('sell snapshot preserves execution slot despite live position mutation during RPC', async () => {
+  const {engine,store}=setup({dryRun:false});const p={mint:'m',slot:10,rawAmount:'1'};store.data.positions.m=p;
+  engine.executor={buildSwap:async(_,s)=>{p.slot=20;assert.equal(s.slot,10);return {signature:'sell'};},submit:async()=>{p.slot=30;}};
+  await engine.sell(p,'max_hold');assert.equal(store.data.pending.sell.swap.slot,10);assert.equal(p.slot,30);
+});
 test('configuration rejects unsafe booleans, numbers and non-Helius endpoints', () => {
   for (const env of [{ DRY_RUN: 'tru' }, { MIN_SELL_SOL: 'NaN' }, { HELIUS_SENDER_URL: 'https://other.com' }, { HELIUS_WS_URL: 'wss://helius-rpc.com.attacker.com' }, { SENDER_TIP_LAMPORTS: 0 }, { DRY_RUN: 'false' }]) {
     assert.throws(() => readConfig({ HELIUS_API_KEY: 'test', ...env }));

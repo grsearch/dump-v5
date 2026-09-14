@@ -9,6 +9,7 @@ async function readAccounts(rpc, keys, swap, c, log, timing = {}) {
     ? Math.min(swap.receivedAt + c.maxSignalAgeMs, swap.eventTime + c.maxSignalAgeMs + 1000) : Infinity);
   const requestedSlot = Number.isSafeInteger(swap.slot) && swap.slot > 0 ? swap.slot : null;
   for (let attempt = 0; ; attempt++) {
+    const attemptStarted = now();
     try {
       const result = await rpc.getMultipleAccountsInfoAndContext(keys, {
         commitment: 'processed', ...(requestedSlot ? { minContextSlot: requestedSlot } : {}),
@@ -21,12 +22,15 @@ async function readAccounts(rpc, keys, swap, c, log, timing = {}) {
       return result;
     } catch (error) {
       const code = Number.isInteger(error.code) ? error.code : null;
-      const delay = (entryRetry ? [100, 200, 300] : [100, 200])[attempt];
+      const interval = (entryRetry ? [100, 200, 300] : [100, 200])[attempt];
+      // RPC time already spent waiting for the lagging node counts toward the backoff.
+      const delay = interval === undefined ? undefined : Math.max(0, interval - (now() - attemptStarted));
       const retry = code === -32016 && delay !== undefined && now() + delay < deadline;
       log('execution_account_read_failed', { method: 'getMultipleAccounts', code,
         reason: code === -32016 ? 'minimum_context_slot_not_reached' : code === 429 ? 'rate_limited' : 'rpc_or_transport_error',
         requestedSlot, contextSlot: Number.isSafeInteger(error.data?.contextSlot) ? error.data.contextSlot : null,
-        attempt: attempt + 1, elapsedMs: now() - started, retry, retryDelayMs: retry ? delay : null });
+        schedulingVersion: 2, attempt: attempt + 1, elapsedMs: now() - started,
+        rpcElapsedMs: now() - attemptStarted, retryIntervalMs: interval ?? null, retry, retryDelayMs: retry ? delay : null });
       if (!retry) throw error;
       await sleep(delay);
       if (now() >= deadline) throw error;

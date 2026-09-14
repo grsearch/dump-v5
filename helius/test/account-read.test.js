@@ -12,6 +12,16 @@ function setup(errors, overrides = {}) {
     { now: () => time, sleep: async ms => { waits.push(ms); time += ms; } }) };
 }
 const lag = () => Object.assign(new Error('accounts: minimum context slot'), { code: -32016, data: { contextSlot: 120 } });
+test('RPC elapsed time counts toward retry cadence without extra calls or lowering slot', async () => {
+  let now = 1000, calls = 0; const waits = [], logs = [];
+  const rpc = { async getMultipleAccountsInfoAndContext(_, opts) {
+    assert.equal(opts.minContextSlot, 123); calls++; now += 70;
+    if (calls <= 2) throw lag(); return { context: { slot: 123 }, value: [] };
+  } };
+  await readAccounts(rpc, [], { slot: 123, receivedAt: 1000, eventTime: 1000, isEntry: true },
+    { maxSignalAgeMs: 2500 }, (_, r) => logs.push(r), { now: () => now, sleep: async ms => { waits.push(ms); now += ms; } });
+  assert.deepEqual(waits, [30, 130]); assert.equal(calls, 3); assert.equal(logs[0].rpcElapsedMs, 70);
+});
 
 test('live entry policy allows only one additional slot retry inside the original signal deadline', async () => {
   let now = 1000, calls = 0; const waits = [];

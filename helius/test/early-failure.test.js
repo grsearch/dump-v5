@@ -17,6 +17,14 @@ function pressure(t) {
   t.x.observe(t.s, swap('sell', 2), .95, 11500);
   t.x.observe(t.s, swap('sell', 1), .94, 12500);
 }
+test('paired fast research changes only failure early exit and preserves 20s timer in recovery', () => {
+  const t=setup(),base=t.s.exitComparisons.find(a=>a.name==='fast_exit_20s'),early=t.s.exitComparisons.find(a=>a.name==='fast_exit_20s_failure_3s');
+  pressure(t);t.x.observe(t.s,swap('sell',0,.9),.9,13000);
+  assert.equal(early.pending.reason,'rebound_failure_3s');assert.equal(base.pending,null);
+  t.x.tick(t.s,30000);assert.equal(base.pending.reason,'max_hold');assert.equal(base.pending.at,30000);
+  const recovery=new Recovery(c,()=>{},()=>.9,'state_exit_recovery');recovery.add(t.s,'pool_observation_gap',31000);
+  assert.equal(recovery.active.get('a:fast_exit_20s').deadlineAt,30000);
+});
 test('3s failure uses net liquidation, fixed flow and exact thresholds then waits for a delayed exit', () => {
   const t = setup(); pressure(t);
   assert.equal(t.arm.pending, null);
@@ -38,7 +46,7 @@ test('returning buy support or small net loss does not trigger; evaluation occur
     assert.equal(t.arm.pending, null); assert.equal(t.arm.failureState.assessment.status, 'not_failed');
     t.x.observe(t.s, swap('sell', 100), .90, 13500);
     assert.equal(t.arm.pending, null);
-    assert.equal(t.events.filter(r => r.type === 'early_exit_assessment').length, 1);
+    assert.equal(t.events.filter(r => r.type === 'early_exit_assessment' && r.variant === t.arm.name).length, 1);
   }
 });
 test('missing flow and missed evaluation window are unavailable, never backfilled by later selling', () => {
