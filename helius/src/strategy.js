@@ -6,7 +6,9 @@ function isSignal(s, c, now = Date.now()) {
   return matchesBaseSignal(s, c) && now - s.receivedAt <= c.maxSignalAgeMs
     && now - s.eventTime <= c.maxSignalAgeMs + 1000 && s.eventTime <= now + 2000;
 }
+function exitConfig(c) { return c.dryRun === false && c.liveExitPolicy ? { ...c, ...c.liveExitPolicy } : c; }
 function exitReason(position, price, c, now = Date.now()) {
+  c = exitConfig(c);
   const pnl = (price / position.entryPrice - 1) * 100;
   // Disable only live fixed stops; historical paper/shadow comparisons retain their definition.
   if (!(c.dryRun === false && c.liveFixedStopLoss === false) && pnl <= -c.stopLoss) return 'stop_loss';
@@ -15,4 +17,4 @@ function exitReason(position, price, c, now = Date.now()) {
   if (now - position.openedAt >= c.maxHoldMs) return 'max_hold';
   return null;
 }
-module.exports = { matchesBaseSignal, isSignal, exitReason };
+module.exports = { matchesBaseSignal, isSignal, exitReason, exitConfig };

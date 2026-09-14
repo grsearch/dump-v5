@@ -1,5 +1,9 @@
 # 实盘行情超时退出
 
+最新实盘阈值（含校准）：固定止盈 10%，移动止盈激活 8%、相对最高价格回撤 3% 卖出，最长持仓 20 秒；固定止损关闭，行情超时仍为 10 秒。行情正常更新也会在开仓 20 秒到期后启动退出。各条件先触发先退出，提交与确认可能晚于触发时刻。
+
+启动与归档中核对 `strategyConfig.liveExitPolicy={version:1,takeProfit:10,trailArm:8,trailDrop:3,maxHoldMs:20000}`。这些实盘值独立于旧 .env 的 TAKE_PROFIT_PCT / TRAILING_ACTIVATE_PCT / MAX_HOLD_MS；旧参数继续用于纸面及 Shadow 研究，更新无需改旧 .env。不要把顶层研究参数误认成实盘有效参数。已有持仓按原 openedAt 计算 20 秒，部署后超时仓可能立即开始退出；已提交交易仍先核对结果，不重复下单。
+
 实盘已取消固定百分比止损（starting.strategyConfig.liveFixedStopLoss=false），保留止盈、移动止盈、最长持仓和本超时退出。有效报价持续到达时不会仅因亏损达到 25% 而卖出。STOP_LOSS_PCT 仍供纸面/Shadow 对照使用，不能据此判断实盘仍有固定止损。更新前已经落盘或提交的 stop_loss 退出继续完成，新的价格评估不再产生 stop_loss。
 
 默认 `QUOTE_TIMEOUT_MS=10000`，仅作用于真实持仓（含实盘校准）。从买入确认建立持仓开始，或最后一笔有效同池交易流报价开始计时，连续满 10 秒即启动退出，不再额外等待。正常持仓的 RPC 轮询报价不刷新这个时钟。延迟到来的报价在刷新时钟前检查已发生的超时。

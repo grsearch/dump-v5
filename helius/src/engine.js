@@ -2,7 +2,7 @@
 const { PublicKey } = require('@solana/web3.js');
 const { normalize, parseSwaps } = require('./parser');
 
-const { isSignal, matchesBaseSignal, exitReason } = require('./strategy');
+const { isSignal, matchesBaseSignal, exitReason, exitConfig } = require('./strategy');
 
 function canClose(item, data, now) {
   return item.createdByBot && item.dueAt <= now && !data.positions[item.mint]
@@ -404,7 +404,7 @@ class Engine {
       for (const p of Object.values(this.data.positions)) {
         const fresh = Date.now() - p.lastPriceAt <= Math.max(5000, this.c.positionPollMs * 2);
         const reason = p.exitRetryReason || (fresh ? exitReason(p, p.lastPrice, this.c)
-          : Date.now() - p.openedAt >= this.c.maxHoldMs ? 'max_hold' : null);
+          : Date.now() - p.openedAt >= exitConfig(this.c).maxHoldMs ? 'max_hold' : null);
         if (reason) await this.sell(p, reason);
       }
       if (Date.now() - this.lastPoll >= this.c.positionPollMs) { this.lastPoll = Date.now(); await this.pollPositions(); }
@@ -419,7 +419,7 @@ class Engine {
     if (!Number.isFinite(last) || now - last < this.c.quoteTimeoutMs) return;
     const fresh = now - p.lastPriceAt <= Math.max(5000, this.c.positionPollMs * 2);
     const reason = p.exitDiagnostic?.reason || (fresh ? exitReason(p, p.lastPrice, this.c, now)
-      : now - p.openedAt >= this.c.maxHoldMs ? 'max_hold' : null) || 'quote_timeout';
+      : now - p.openedAt >= exitConfig(this.c).maxHoldMs ? 'max_hold' : null) || 'quote_timeout';
     p.exitRetryReason = reason;
     p.quoteTimeout = { version: 1, detectedAt: now, lastStreamQuoteAt: last, gapMs: now - last, thresholdMs: this.c.quoteTimeoutMs };
     this.store.save();
