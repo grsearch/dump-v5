@@ -15,7 +15,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 mkdir -p "$INSTALL_DIR/helius" "$INSTALL_DIR/deploy"
 if [[ "$(readlink -f "$PROJECT_DIR")" != "$(readlink -f "$INSTALL_DIR")" ]]; then
-  rsync -a --exclude=node_modules --exclude=.env --exclude=.cos.env --exclude=data --exclude='*.jsonl' \
+  rsync -a --delete --exclude=node_modules --exclude=.env --exclude='.env.*backup*' --exclude=.cos.env --exclude=data --exclude='*.jsonl' \
     "$PROJECT_DIR/helius/" "$INSTALL_DIR/helius/"
   cp "$PROJECT_DIR/deploy/"*.service "$PROJECT_DIR/deploy/"*.timer "$INSTALL_DIR/deploy/"
   cp "$PROJECT_DIR/package.json" "$PROJECT_DIR/package-lock.json" "$PROJECT_DIR/README.md" "$INSTALL_DIR/"
@@ -42,7 +42,7 @@ sed -e "s|/opt/dump-sniper|$INSTALL_DIR|g" \
   -e "s|^ExecStart=/usr/bin/node |ExecStart=$NODE_BIN |" \
   "$INSTALL_DIR/deploy/dump-sniper-dashboard.service" > /etc/systemd/system/dump-sniper-dashboard.service
 systemctl daemon-reload
-echo "Installed. Configure $INSTALL_DIR/helius/.env; DRY_RUN=true is the default."
+echo "Installed shadow-only momentum research. Live trading cannot be enabled."
 echo 'Fresh installation: state files are created automatically on first start.'
 echo 'When ready: sudo systemctl enable --now dump-sniper'
 echo 'Logs: journalctl -u dump-sniper -f'

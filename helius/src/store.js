@@ -1,52 +1,10 @@
 'use strict';
-const fs = require('node:fs');
-const path = require('node:path');
-
-// One process per state file. A corrupt state file must never become an empty wallet ledger.
-class Store {
-  constructor(file, mode, wallet) {
-    this.file = file;
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    this.lockFile = `${file}.lock`;
-    try { this.lockFd = fs.openSync(this.lockFile, 'wx', 0o600); }
-    catch (e) {
-      if (e.code !== 'EEXIST') throw e;
-      const pid = Number(fs.readFileSync(this.lockFile, 'utf8'));
-      if (!Number.isSafeInteger(pid) || pid < 1) throw new Error('Invalid state lock; inspect manually');
-      try { process.kill(pid, 0); throw new Error('Another bot process owns this state'); }
-      catch (err) { if (err.code !== 'ESRCH') throw err; }
-      fs.unlinkSync(this.lockFile);
-      this.lockFd = fs.openSync(this.lockFile, 'wx', 0o600);
-    }
-    fs.writeFileSync(this.lockFd, String(process.pid));
-    try {
-      this.data = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {
-        version: 1, mode, wallet, positions: {}, cleanup: {}, cooldown: {}, pending: {}, seen: {}, streamDays: {},
-      };
-      if (this.data.version !== 1 || this.data.mode !== mode || this.data.wallet !== wallet) throw new Error('State mode/wallet mismatch');
-      for (const key of ['positions', 'cleanup', 'cooldown', 'pending', 'seen', 'streamDays']) {
-        if (!this.data[key] || typeof this.data[key] !== 'object' || Array.isArray(this.data[key])) throw new Error(`Invalid state: ${key}`);
-      }
-    } catch (err) { this.close(); throw err; }
-  }
-  save() {
-    const temp = `${this.file}.tmp`;
-    const fd = fs.openSync(temp, 'w', 0o600);
-    try { fs.writeFileSync(fd, JSON.stringify(this.data, null, 2)); fs.fsyncSync(fd); }
-    finally { fs.closeSync(fd); }
-    fs.renameSync(temp, this.file);
-    if (process.platform !== 'win32') {
-      const dir = fs.openSync(path.dirname(this.file), 'r');
-      try { fs.fsyncSync(dir); } finally { fs.closeSync(dir); }
-    }
-  }
-  log(type, fields = {}) {
-    const record = { time: new Date().toISOString(), type, ...fields };
-    fs.appendFileSync(`${this.file}.jsonl`, `${JSON.stringify(record)}\n`, { mode: 0o600 });
-    console.log(JSON.stringify(record));
-  }
-  close() {
-    if (this.lockFd !== undefined) { fs.closeSync(this.lockFd); this.lockFd = undefined; fs.unlinkSync(this.lockFile); }
-  }
+const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
+function atomicJSON(file,data){fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file+'.tmp',JSON.stringify(data),{mode:0o600});fs.renameSync(file+'.tmp',file);}
+class Store{
+ constructor(dir){this.dir=dir;fs.mkdirSync(dir,{recursive:true});this.file=path.join(dir,'trend-state.json');this.lock=path.join(dir,'trend.lock');if(fs.existsSync(this.lock)){const pid=Number(fs.readFileSync(this.lock,'utf8'));if(!Number.isInteger(pid)||pid<1)throw new Error('Invalid lock');try{process.kill(pid,0);throw new Error('Already running');}catch(e){if(e.code!=='ESRCH')throw e;}fs.unlinkSync(this.lock);}fs.writeFileSync(this.lock,String(process.pid),{flag:'wx',mode:0o600});this.data=fs.existsSync(this.file)?JSON.parse(fs.readFileSync(this.file,'utf8')):{schema:1,ages:{},streamDays:{},positions:[],totals:{closed:0,wins:0,net:0,unknown:0}};if(this.data.schema!==1)throw new Error('Invalid trend state');this.runId=crypto.randomUUID();this.events=[];for(const p of this.data.positions){this.log('shadow_unknown',{...p,reason:'process_restart'});this.data.totals.unknown++;}this.data.positions=[];}
+ log(type,fields={}){const r={...fields,type,at:fields.at??Date.now(),schema:1,strategy:'old_pool_momentum_v1',runId:this.runId};fs.appendFileSync(path.join(this.dir,'trend-'+new Date(r.at).toISOString().slice(0,10)+'.jsonl'),JSON.stringify(r)+'\n',{mode:0o600});this.events.push(r);if(this.events.length>500)this.events.shift();}
+ save(view={}){atomicJSON(this.file,this.data);atomicJSON(path.join(this.dir,'dashboard.json'),{at:Date.now(),mode:'shadow_only',strategy:'old_pool_momentum_v1',...view,totals:this.data.totals,positions:this.data.positions,events:this.events.slice().reverse()});}
+ close(){this.save();fs.unlinkSync(this.lock);}
 }
-module.exports = Store;
+module.exports={Store,atomicJSON};

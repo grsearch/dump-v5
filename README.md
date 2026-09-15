@@ -1,139 +1,45 @@
-# Helius PumpSwap 砸单程序 v5
+# PumpSwap 老币放量趋势研究
 
-新增独立入场时机研究：比较原入场、止跌回升2%且有两笔买单、止跌回升2%且有两个不同买家。研究重新计算各自入场和退出，仅采集、不控制买卖、不增加API请求。默认开启 `SHADOW_ENTRY_COMPARISONS=true`，核对方法见 [观察实验说明](helius/OBSERVATION.md#入场时机研究-v1)。
+全新策略 `old_pool_momentum_v1`，**仅 shadow，不读取钱包、不签名、不提交交易**。旧实盘引擎、砸单过滤、旧模型及旧shadow实验已移除。原环境中的DRY_RUN=false、7/8 SOL砸单、冷却、固定止盈等值不会生效。
 
-按全新服务器安装使用。行情和交易只连接 Helius，自动发现经过校验的 Pump 毕业迁移池，只在毕业后0–30分钟接纳新买入；首次观察到真实SOL储备<50后永久关闭该池的新入场，原持仓及待确认交易保留行情。无需手工币名单。另支持腾讯云 COS 每日分析归档。
+## 研究规则
 
-当前订阅已改为“同时涉及Pump毕业程序与PumpSwap的发现通道＋动态池地址行情通道”，不再订阅全部PumpSwap完整交易。首次迁移余额缺失记unknown，保留订阅等有效余额，不能买入，也不按0退订。首次安装只发现启动后的迁移；断线期间不保证补齐漏掉的新池。详见 [动态订阅及部署核对](helius/FRESH-SUBSCRIPTIONS.md)。下文早期版本的全量流量分析属于历史说明。
+- 仅WSOL报价PumpSwap池。毕业迁移AGE≥24小时；必须有匹配Pump迁移指令及完成事件的证据。不是代币创建时间、池首次观察时间。未知不买。
+- 最近60秒买卖报价金额之和达到约10,000/20,000 USD两档（同笔只计报价侧一次）。USD由Helius getAsset的WSOL价格估算，官方缓存可能落后600秒；每60秒取一次，超过120秒未成功更新停新入场。不会声称这是逐笔准确美元成交额。
+- 连续连接下每池预热6分钟；最新60秒量≥此前5分钟的每分钟均量3倍。基线严格排除最新60秒。
+- 60秒净买入为正，10秒净买入为正，至少5笔交易、3个买家地址。地址数不是独立人数，单笔占比记录供分析，不视为防刷量保证。
+- 价格突破基线区间高点。比较直接突破和突破后回到突破位±1%、随后重新站上突破位的回踩入场。预选事件有效3分钟，不是持仓时限。
+- 2档成交量×2种入场×2组移动止盈，共8个独立研究组；每个池每组同一时刻最多一笔。组间不能把资金和收益简单相加当组合绩效。
+- 模拟每笔0.05 SOL，买/卖费用各100bps、滑点各100bps、每边网络成本0.000305 SOL；按下一笔有效池状态、至少500ms延迟估算恒定乘积可执行价值，最大买入冲击2%。不支持虚拟报价储备的执行估值，不能冒充链上成交。
+- 移动止盈：净价值盈利20%激活、峰值价值回撤8%；或盈利40%激活、回撤12%。无固定止盈、无固定损失百分比止损、无最长持仓。
+- 突破位跌破3%且30秒净卖压时退出（结构失效规则，不是固定成本止损）。报价超过15秒缺失、断流、重启或估价不可用记unknown，不使用旧价伪造退出。unknown不计为0损益。
 
-默认：卖单至少 8 SOL、跌幅 10%–30%、卖后流动性至少 30 SOL；每次买入报价 1 SOL；同币冷却 30 秒，最多 20 个持仓，每分钟最多准备 6 次买单。卖空后 2 小时检查回收空 ATA 租金。已有服务器的 .env 显式金额优先，更新后请核对 POSITION_SIZE_SOL=1。
+这些阈值是实验初值，没有历史盈利证明。没有最长持仓也不代表永不退出。
 
-[Dashboard 运行面板](helius/DASHBOARD.md)：端口 8787，显示实际启动参数、持仓、交易、观察与上传状态。默认通过 SSH 隧道访问，不开放公网端口。
+## 发现、覆盖和成本
 
-[安装与配置](helius/README.md) · [完整买卖策略](helius/STRATEGY.md) · [反弹样本与训练](helius/SHADOW.md) · [买入速度与延迟分析](helius/LATENCY.md) · [验证记录](helius/VALIDATION.md)
+先接收PumpSwap及Pump迁移程序交易，在本地维护池历史。Helius不提供60秒聚合量服务端筛选，因此全网发现仍消耗流量，预选不能抵消前端成本。
 
-默认开启反弹观察：复用行情，记录买入前特征及之后 30/60 秒反弹和策略模拟结果，支持离线训练、校准及时间分区验证。特征采集在独立线程，不增加 Helius 请求；独立账户补报价研究使用有限额的 Helius RPC。没有模型时概率为空；加载模型后也只记录预测，暂不参与买卖。
+最多1000个历史池、总20万条/单池2万条交易事件；容量淘汰会记录并重新预热，不伪装成完整覆盖。活跃预选记录完整6分钟上下文和后续逐笔；全体监测池每5秒记录一次窗口统计。
 
-最新更新：退出补报价优先处理到期持仓，在原每分钟 10 次预算内预留请求；记录脱敏 RPC 错误类别。默认 PAPER_PREBUY_FILTER=true：模拟买入直接拦截前15秒买入金额占比<20%、前60秒已跌超20%、砸单≥40 SOL，砸单前连续至少3笔卖出且前5秒净卖出、前5秒买入金额占比≥80%、已验证迁移AGE在[30,120)分钟的候选；任一命中即跳过。保留后台观察及新旧过滤研究组，不改变退出参数或实盘下单路径。部署与核对见 [观察实验说明](helius/OBSERVATION.md)。
+全新数据目录不沿用旧AGE缓存。成交量约1000 USD的池进入AGE后台核验队列；统一RPC预算默认6次/分钟（含价格查询），单池最多20页历史、每页1000签名，尾部最多8笔交易匹配真实迁移。超页数、找不到证据保持unknown；这会漏掉交易极密集或历史不可得的老币，不能把已核验池当全市场。
 
-补报价遇到最小slot未达到时，现支持2/4/8秒的有限重试，仍受原请求预算约束；新增历史未知允许/拒绝对照，执行归档自动按入场过滤状态汇总成本。当前模拟入场仍拒绝已知危险，历史未知的处理未改为硬拦截。
+流量默认20 GB/UTC日上限（TREND_STREAM_GB_PER_DAY），达到后停止接收、持仓记unknown，下一UTC日恢复。这是预算，不是预估实际消耗或完整24小时覆盖承诺。面板展示已用字节；若很快耗尽，应重新设计发现范围，而非悄悄放开预算。
 
-[每天北京时间 07:00 上传 COS](helius/COS-UPLOAD.md)：目标 guigu-1403019446 / na-siliconvalley。将密钥填入服务器 `helius/.cos.env` 后按说明启用定时器；下载每天的 analysis.jsonl.gz 和 summary.json 即可交回分析。随包附 [分析请求模板](helius/ANALYSIS-REQUEST.md)。
+## 安装
 
-要求 Node.js 22 或更新版本及 npm。解压发行包后，在项目根目录执行：
+Node.js≥22；`npm ci --prefix helius`；复制`helius/.env.example`并填写Helius key。`npm start`，`npm test`。没有实盘开关。
 
-```bash
-npm run setup
-cp helius/.env.example helius/.env
-chmod 600 helius/.env
-# 编辑 helius/.env，填写 Helius API key；默认 DRY_RUN=true
-npm test
-npm run benchmark
-npm start
-```
+服务器目录`/opt/dump-sniper`；`sudo bash deploy/install.sh`同步新程序（删除已移除的旧代码，保留.env/.cos.env/data）。首次迁移必须先停旧进程、确认链上仓位/待确认交易处理完成，再按用户授权清理旧数据，不能在运行中删账本。
 
-配置文件为 helius/.env。模拟模式消耗行情额度，不签名或交易。正式运行可采用 README 中的 systemd 安装步骤；仅启动一个服务实例。
+`dump-sniper`采集；`dump-sniper-dashboard`面板8787（外部监听需至少24位访问令牌）；`dump-sniper-upload.timer`北京时间07:00归档及15分钟补偿检查。先测试再重启服务。
 
-无其他在途交易且网络/节点正常时，工程估算：收到推送到发起发送约 50–250 ms；砸单执行到买单执行约 0.5–2 秒。腾讯云尚未实测，费用竞争与确认锁可能明显扩大延迟或使机会被跳过，详见延迟分析。
+## 新数据与归档
 
-即时检查最近一小时：`node helius/scripts/export-recent.js --hours 1`。每份日报新增 quality.json，区分缺失标签与负样本，并报告模拟毛盈亏和训练门槛。
+`helius/data/trend-YYYY-MM-DD.jsonl`、`trend-state.json`、`dashboard.json`。事件包含session/sol_usd/migration_evidence/pool_window/shortlist/watch_swap/entry_signal/shadow_entry/exit_signal/shadow_exit/shadow_unknown/coverage_gap。
 
-新增[执行对照、模型观察与迁移 AGE分析](helius/OBSERVATION.md)：不改变买卖决策，复用 Helius 行情记录毕业迁移事件，未知迁移年龄保持为空。
+每日导出最近完整北京时间07:00–07:00窗口的`analysis.jsonl.gz`及`summary.json`，含按研究组收益、未知原因、文件SHA256。模拟入场和退出记录携带关联ID、成本、冻结突破位和时间，跨日结果可与前日信号关联。上游行情缺失不能被文件哈希完整性掩盖。
 
-2026-09-08：新增迁移事件接收/解析/缓存/命中诊断，以及逐笔 execution-audit.json。买卖阈值不变；更新后先用15分钟导出核对采集。
+COS仍使用原bucket/region凭据，新前缀`old-pool-momentum/daily/YYYY-MM-DD/`；上传后核验长度与SHA256元数据。`npm run export --prefix helius`仅本地导出最近完整窗口。
 
-新增 `no_fixed_stop` 退出观察对照：仅在模拟研究中取消固定止损，保留止盈、追踪及最长持仓；原交易配置不变，结果自动进入每日归档。见 [观察与训练说明](helius/OBSERVATION.md)。
-
-模型部署新增安装/检查工具，长期退出新增不连续观察恢复记录。详见 [观察部署说明](helius/OBSERVATION.md)。
-
-按用户授权，已发布可直接从仓库安装的[冻结双评分模型](observation-models/20260908/README.md)。这一指定模型包作为发布例外，原始数据、密钥和其他训练产物继续保持私有。
-
-新增30%/50%固定止盈（保留或取消固定止损）独立对照，以及有预算的Helius账户状态补报价。仅用于已入场研究持仓；连续标签与间断估价分开归档，不改变订单规则或已安装模型。默认最多10次补查询/分钟，详见 [观察与训练说明](helius/OBSERVATION.md)。
-
-新增默认关闭的小额实盘校准模式：0.05 SOL、持仓上限可配1–20仓（默认20）、不限制总买入尝试和累计亏损；统计跨重启保留，强制六项过滤，并行同金额及1 SOL参考shadow。代码更新不会自动切实盘，启用与核对见[校准说明](helius/OBSERVATION.md)。
-
-### Helius 流量归因（streamTrafficVersion=2）
-
-每 60 秒产生一条 `stream_traffic`，正常停止时补写不足一分钟的部分；记录自动进入现有 COS `analysis.jsonl.gz`。仅复用现有交易解析和接收字节计数，无新增订阅或 RPC，不保存原始报文，不改变交易过滤或止损。
-
-分类为 parsed_buy / parsed_sell / parsed_mixed（有效解析）、unparsed_swap（识别到买卖指令但未通过解析校验）、verified_migration（迁移验证通过，优先于买卖分类）、other_transaction（未识别到支持的买卖指令，不能据此断言没有 swap），以及重复、过期 slot、控制消息、错误、预算丢弃等。每条消息只计入一个分类，分类 byteCount 总和等于总 byteCount。这些是收到的应用消息字节，不是 Helius 账户账单，也不包含 RPC 请求费用。
-
-池子统计取已识别买卖指令的池地址；多池交易平均分摊整条消息字节，属于估算。每分钟最多跟踪 2048 个池，输出前 20 个，其余分别进入 otherPoolByteCount / overflowPoolByteCount；没有池地址的进入 unattributedByteCount。候选池统计不表示其买卖已通过安全校验，更不能仅凭流量认定刷量。池名单每分钟清空，内存和日志量有界。
-
-部署后检查 starting.strategyConfig.streamTrafficVersion=2，运行一分钟后应看到 stream_traffic；导出 15–30 分钟窗口即可开始定位流量来源：
-
-```bash
-node helius/scripts/stream-traffic-report.js /path/to/analysis.jsonl.gz > traffic-summary.json
-```
-
-汇总输出分类占比与池榜。池榜仅累加每分钟前 20 名，为下界估算，不是精确全窗口排名；每分钟统计可能跨导出边界，异常退出最多丢失最后一分钟的归因。旧归档没有原始报文，无法补算流量。若 intervals=0，说明文件内尚无新版统计，应先核对部署和导出窗口。
-
-v2 新增 reasons：unsupported_pair、missing_instruction_accounts、multiple_pool_instructions、repeated_pool_swaps、missing_authenticated_swap_event、ambiguous_swap_event、missing_vault_balances、nonpositive_reserves、balance_direction_mismatch；其他交易细分 unsupported_amm_instruction / amm_event_only / no_amm_instruction。多原因消息按原因数均分字节（不是实际指令大小），messages 可重叠，不可累加当交易数。部分可解析的复合交易归 parsed_swap；原因表示首个未通过的校验，不是所有潜在问题。汇总兼容 v1/v2，reasonCoveredByteCount 明确原因统计覆盖的字节数，不能将旧版缺失原因当作零。
-
-### 实盘卖出短重试（exitRetryVersion=1）
-
-账户读取 -32016 且尚未写入待确认交易、或链上已确认卖出滑点失败（6004）时，重试资格等待依次为 250 / 500 / 1000 ms；每仓 60 秒窗口最多 3 次、全局最多 6 次短重试，超额以及其他失败仍等待 10 秒。每次重新读取账户和构建交易，保留原滑点上限。预算随账本保存，重启不会补满。短重试可能增加 RPC 次数，上限约束的是额外短重试，不是全部 RPC 请求。
-
-重试由现有行情/1 秒维护循环驱动，以上是最早可重试时间，不保证毫秒级发出或成交。已失败退出意图会保留，即使行情变旧或价格回升，也继续完成退出。发送超时但有待确认签名时先核对链上结果，不重建交易；其他账户的待确认交易、全局执行锁仍可能延后退出。止盈20%、止损25%、买入金额和过滤条件不变。
-
-部署后核对 starting.strategyConfig.exitRetryVersion=1；自然失败时应出现 exit_retry_scheduled（kind、fast、delayMs、预算计数），随后检查新 sell_submitted 的 triggerToSendMs 和真实回执，不能只看计划等待时间认定已恢复。没有自然失败时无该日志不算部署失败。
-
-### 实盘储备与亏损冷却（liveEntryPolicy.version=1）
-
-实盘（包括校准模式）默认启用两项额外防守，不依赖旧 .env 更新：触发砸单后的 WSOL 储备必须严格大于100 SOL（等于100也拒绝；不是TVL、美元市值或虚拟储备）。信号阶段拒绝未知/不足储备；准备期间的同池行情可取消低储备候选，执行器利用已有账户读取再次核对实际储备，不额外发起查询。现有持仓卖出不受此买入门槛影响。原始 paper/shadow 候选和研究标签保持原条件，便于比较新过滤效果。
-
-同币成功卖出且净收益为负后冷却600000ms；校准采用calibration_receipt的netPnlSol（含买卖经济成本），普通实盘采用成交解析的netPnlSol。失败交易、浮亏、未知收益、零收益、关户手续费都不触发本项。冷却从回执观察时刻计时，到期即允许；与原30秒信号冷却并存。lossCooldowns随账本持久化；升级时从校准账本恢复仍未过期的亏损记录，不因重启重新开始10分钟。可查live_loss_cooldown_started和live_entry_policy日志。
-
-合格候选遇到执行锁或待确认交易时，最多短等500ms，每池最多一个等待名额、全局16个。等待期间不预留额度、不建立交易；信号时限仍从原事件开始，释放后重查时效、持仓、冷却、继续下跌保护和卖出优先级。不会解除未知交易锁，不保证排队候选必定成交。停止/断流后候选仍由既有检查拒绝。
-
-实盘配置下的入场账户读取，仅对-32016最多增加第三次追赶（100/200/300ms，共最多4次读取），重试调度窗口上限1100ms且不得超过原信号有效期；单次网络请求超时不是1100ms保证。非-32016不盲目重试，卖出内层读取策略保持原样。额外重试可能增加少量RPC消耗，仍受候选准备每分钟6次约束。
-
-shadow_health.filterTiming新增requests/responses/timeouts/lateResponses/maxQueueMs/maxComputeMs/maxRoundTripMs，用于区分排队与计算延迟。250ms过滤器超时不放宽；maxQueueMs包含发往worker的调度和传输等待，不能直接当CPU耗时。execution-audit现有漏斗增加livePolicyRejected和entryWait分组（分组可能重叠，不可相加当候选总数）。
-
-部署后核对starting.strategyConfig.liveEntryPolicy：version=1、reserveExclusiveSol=100、lossCooldownMs=600000；exitRetryVersion=1和streamTrafficVersion=2应同时保留。模型、买入金额和止盈止损不变。导出15–30分钟验证拒绝原因、冷却及等待日志；新策略的实际盈利效果需要新数据验证。
-
-### 0.05 SOL 多归档训练与后续验证
-
-新增离线脚本 `helius/scripts/train-calibration-archives.js`。必须指定策略 ID、金额和后续验证起点；只合并对应 `same_size` 数据，不混入 1 SOL 参考组、不用中断恢复结果替代连续训练标签。每份归档先核对 SHA256/大小，去重历史关联上下文、排除冲突记录，并剔除跨训练/验证边界的未结束样本。
-
-```bash
-node helius/scripts/train-calibration-archives.js \
-  --archive /path/to/daily-export \
-  --archive /path/to/new-window-export \
-  --policy aa6585feb6adcec2 --size-sol 0.05 \
-  --holdout-start 2026-09-11T00:00:00Z \
-  --out /path/to/new-research-run
-```
-
-`--archive` 可重复；日期是 UTC，上例为北京时间08:00。策略 ID 必须匹配归档里的 session，不能跨买卖金额/策略口径强行合并。输出目录必须不存在，避免覆盖旧模型。脚本训练 loss_25（净亏至少25%）、net_return（净收益比例）、strategy_proxy（净收益为正的分类），使用已有时间切分、标签重叠剔除和运行时范围过滤，另外固定阈值检查后续窗口与未见代币。报告 currentEntryRules 单列历史充分、原六项通过或只有AGE未知、信号储备>100 SOL的子集；不模拟冷却、持仓容量或真实成交。
-
-报告包含 SHA256 来源、缺失/删失数量、超训练范围数量与已知净收益。样本不足只输出报告；即使历史验证通过，研究模型也不自动安装、不修改 .env、不启用实盘评分。后续样本收益仍负就不能称为盈利策略。已经人工查看的时段不属于完全未见的测试集。研究模型与本地分析结果默认不提交仓库。
-
-### 流量诊断样本 v3
-
-`starting.strategyConfig.streamTrafficVersion=3`，每分钟 `stream_traffic.version=3`。对 unsupported_pair / no_amm_instruction / unsupported_amm_instruction / multiple_pool_instructions，每个原因每统计区间最多记录3条 `stream_traffic_sample`，总共最多12条；仅在命中配额时组装内容。包含公开签名、slot、有限的程序列表、代币mint和PumpSwap指令前9个账户，便于核对解析器账户位置与真实交易对。不是完整原始交易，也不包含私钥或RPC密钥。
-
-样本随既有交易日志进入COS；`stream-traffic-report.js` 汇总样本总数并附最多100个例子，兼容旧v1/v2归档。首批抽样不是随机样本，不可据其比例估计全网构成；频率应看全量reason字节统计。无额外RPC、无新订阅；本版不改变服务端过滤，所以不会自动降低Helius账单。先用这些证据确认哪些交易可安全排除，再实施订阅端优化，不能从“unsupported”字样直接屏蔽以免漏掉持仓行情或迁移。
-
-### 三秒反弹失败退出研究（exitResearchVersion=4）
-
-第10个独立退出对照组 `rebound_failure_3s`，不接入实盘卖出、不改原始shadow训练标签、不增加RPC。以代理成交入场时间为0：前三秒(0,3000]记录买卖SOL金额和笔数，最后一秒为(2000,3000]；入场时那笔交易不计入后续流量。
-
-在入场后[3000,4000]ms的第一笔有效交易报价上只评估一次，四项同时成立才触发：可卖出净收益≤-8%（扣代理费用、滑点、曲线冲击与网络费）；前三秒卖出≥2笔；卖出金额≥买入金额1.5倍且卖出金额>0；最后一秒卖出金额>买入金额。-8%、1.5倍是固定研究假设，尚非已验证的盈利参数。买方为0时仍可满足卖压条件，不做除零计算。零金额不计成交笔数。
-
-失败即进入该对照组的待退出状态，退出沿用现有500ms延迟并等待有效报价，不保证在入场后三秒整成交，也不保证按-8%卖出。普通25%止损、20%止盈、移动止盈和最长持仓仍优先有效。未满足条件则继续原退出规则，不延长持仓；不反复重判。3–4秒没有有效评估报价、无前三秒成交记录、成交金额缺失或发生行情缺口，记unavailable，不作为反弹成功。最多1秒是评估时点允许的延后，流量窗口仍固定为入场前三秒，之后买卖不得回填。
-
-新增 `early_exit_assessment`，status为failed/not_failed/unavailable/not_reached（其他退出先触发）；记录实际评估时间、净收益、买卖额/笔数、最后一秒资金流和固定规则。`not_failed`只表示未满足失败条件，不表示最终盈利。`exit_comparison`包含earlyAssessment与退出结果；行情中断后保持原标签删失，恢复组仅保留已触发意图，不从账户快照或迟到交易重新构造前三秒判断。
-
-`quality.json.audit.earlyExitAssessments`汇总评估结果；归档自动包含原始评估及退出记录。比较时按同一id、same_size、相同入场配对；分别报告触发组、未触发组、无法评估组，不能只看成功早退样本。训练模型安装、买卖金额、实盘六项过滤、储备门槛和冷却保持不变。
-# 实盘行情超时退出
-
-**最新实盘 v2：7 SOL最小砸单；20%固定止盈；10%激活、3%回撤移动止盈；20秒持仓上限；同币确认亏损后冷却1分钟。** 固定止损关闭、10秒行情超时退出保留。旧.env不覆盖实盘门槛，旧冷却自动缩短。核对说明见 [实盘策略v2](helius/LIVE-POLICY-V2.md)。以下执行版本说明中的旧阈值属于历史版本。
-
-最新执行改进：新买入的20秒上限从发送前已落盘的提交时间计起，确认等待不再额外延长持仓；账户读取重试扣除请求本身耗时，次数与slot校验不变。新增同入口快退出/三秒反弹失败早退研究对照，不接实盘早退。详见 [执行与计时 v2](helius/EXECUTION-CLOCK.md)。
-
-**最新实盘规则：已取消固定百分比止损**（`liveFixedStopLoss=false`）。实盘采用 10% 固定止盈、盈利达到 8% 后回撤 3% 的移动止盈、20 秒最长持仓和 10 秒行情超时退出。行情持续更新时，即使亏损超过 25%，也不再仅因跌幅触发卖出。纸面/Shadow 原固定止损对照不变；配置中的 `STOP_LOSS_PCT=25` 仅用于这些保留口径。更新前已落盘或已提交的退出继续完成，避免丢失待确认交易或重复下单。
-
-实盘持仓连续 10 秒没有有效交易流报价，即启动退出，原因记为 `quote_timeout`，面板显示“行情超时退出”。不是触发后再等 10 秒。通过现有卖单准备流程读取 Helius 最新池子账户并提交，失败沿用退出重试；RPC 补报价不重置交易流计时。已触发的退出跨行情恢复、钱包忙和进程重启保留，已触发的原止盈/止损优先。参数 `QUOTE_TIMEOUT_MS=10000` 默认生效。
-
-每秒维护检查，实际提交还受 RPC、待确认交易及重试等待影响，不保证 10 秒整成交。旧持仓没有独立交易流时间时，以原开仓时间判断，更新后可能立即启动超时退出。纸面与 Shadow 的旧估值/中断标签不变，不按旧价格伪造超时成交。部署验证见 [行情超时退出说明](helius/QUOTE-TIMEOUT.md)。
+Dashboard不执行交易、不增加Helius请求，展示预选/持仓/采集质量/最近500事件分页，合约可跳转GMGN。完整研究盈亏按组在summary中，不把不同组混成一项实盘利润。
