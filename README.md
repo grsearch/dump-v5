@@ -1,45 +1,55 @@
-# PumpSwap 老币放量趋势研究
+# Solana 老币放量趋势研究
 
-全新策略 `old_pool_momentum_v1`，**仅 shadow，不读取钱包、不签名、不提交交易**。旧实盘引擎、砸单过滤、旧模型及旧shadow实验已移除。原环境中的DRY_RUN=false、7/8 SOL砸单、冷却、固定止盈等值不会生效。
+`selected_pool_momentum_v2`：**只开 shadow，没有钱包、签名或交易提交路径。** 旧砸单、迁移AGE和实盘过滤条件不参与这套策略。
 
-## 研究规则
+## 数据分工
 
-- 仅WSOL报价PumpSwap池。毕业迁移AGE≥24小时；必须有匹配Pump迁移指令及完成事件的证据。不是代币创建时间、池首次观察时间。未知不买。
-- 最近60秒买卖报价金额之和达到约10,000/20,000 USD两档（同笔只计报价侧一次）。USD由Helius getAsset的WSOL价格估算，官方缓存可能落后600秒；每60秒取一次，超过120秒未成功更新停新入场。不会声称这是逐笔准确美元成交额。
-- 连续连接下每池预热6分钟；最新60秒量≥此前5分钟的每分钟均量3倍。基线严格排除最新60秒。
-- 60秒净买入为正，10秒净买入为正，至少5笔交易、3个买家地址。地址数不是独立人数，单笔占比记录供分析，不视为防刷量保证。
-- 价格突破基线区间高点。比较直接突破和突破后回到突破位±1%、随后重新站上突破位的回踩入场。预选事件有效3分钟，不是持仓时限。
-- 2档成交量×2种入场×2组移动止盈，共8个独立研究组；每个池每组同一时刻最多一笔。组间不能把资金和收益简单相加当组合绩效。
-- 模拟每笔0.05 SOL，买/卖费用各100bps、滑点各100bps、每边网络成本0.000305 SOL；按下一笔有效池状态、至少500ms延迟估算恒定乘积可执行价值，最大买入冲击2%。不支持虚拟报价储备的执行估值，不能冒充链上成交。
-- 移动止盈：净价值盈利20%激活、峰值价值回撤8%；或盈利40%激活、回撤12%。无固定止盈、无固定损失百分比止损、无最长持仓。
-- 突破位跌破3%且30秒净卖压时退出（结构失效规则，不是固定成本止损）。报价超过15秒缺失、断流、重启或估价不可用记unknown，不使用旧价伪造退出。unknown不计为0损益。
+- **DexScreener免费API发现和FDV筛选**：轮询最新/更新资料、boost列表及SOL关键词搜索，将其发现的Solana代币缓存，分批更新交易池信息。FDV必须严格大于30,000 USD；缺失不通过。Boost只是发现来源，不代表自然热度或可信度。
+- **Jupiter核验首池年龄**：`tokens/v2/search`只补充已发现地址，使用`firstPool.createdAt`，收录年龄1–14天（含边界）。未知不收录。不使用代币创建时间、单个池的pairCreatedAt或Pump毕业迁移时间代替。
+- **Helius资金流**：先批量核验池账户owner，只对入选池地址作transactionSubscribe；没有候选就没有订阅，绝不退回全网程序订阅。实际60秒资金流来自Helius交易，不用DexScreener五分钟量推算一分钟量。
+- **Jupiter shadow估价**：只调用GET `/swap/v1/quote`，无需钱包的Metis报价接口。该接口仍可用但官方已标为不再积极维护；未使用需要taker的Swap v2订单/执行接口。API key仅在服务端环境配置，绝不进日志、面板或仓库。
 
-这些阈值是实验初值，没有历史盈利证明。没有最长持仓也不代表永不退出。
+**覆盖是DexScreener发现子集，不是Solana全网完整枚举。** 免费公开API没有按AGE/FDV分页枚举全网的端点。每个候选优先保留一个流动性较高且已支持的池，默认最多20池；一分钟量是该监控池的量，不是代币全部DEX合计。现有有效池优先保留，防止每分钟替换导致无法预热；因此不会自动覆盖所有新出现的高量机会。
 
-## 发现、覆盖和成本
+## 跨DEX解析范围
 
-先接收PumpSwap及Pump迁移程序交易，在本地维护池历史。Helius不提供60秒聚合量服务端筛选，因此全网发现仍消耗流量，预选不能抵消前端成本。
+支持PumpSwap、Raydium CPMM/CLMM、Meteora DLMM/DAMM v2、Orca Whirlpool swap/swap_v2。Raydium旧AMM v4、Orca原生two-hop及未实现的池型记为未覆盖，不冒充全DEX解析。经Jupiter等路由器调用以上标准swap指令可以解析；同交易重复操作同池或夹杂同池流动性操作时排除，避免归属错误。
 
-最多1000个历史池、总20万条/单池2万条交易事件；容量淘汰会记录并重新预热，不伪装成完整覆盖。活跃预选记录完整6分钟上下文和后续逐笔；全体监测池每5秒记录一次窗口统计。
+账户布局来源：
+- [PumpSwap官方IDL](https://github.com/pump-fun/pump-public-docs/blob/main/idl/pump_amm.json)
+- [Raydium官方IDL](https://github.com/raydium-io/raydium-idl)
+- [Meteora DLMM官方IDL](https://github.com/MeteoraAg/dlmm-sdk/blob/main/idls/dlmm.json)
+- [Meteora DAMM v2官方IDL](https://github.com/MeteoraAg/damm-v2-sdk/blob/main/src/idl/cp_amm.json)
+- [Orca官方生成指令](https://github.com/orca-so/whirlpools/tree/main/rust-sdk/client/src/generated/instructions)
 
-全新数据目录不沿用旧AGE缓存。成交量约1000 USD的池进入AGE后台核验队列；统一RPC预算默认6次/分钟（含价格查询），单池最多20页历史、每页1000签名，尾部最多8笔交易匹配真实迁移。超页数、找不到证据保持unknown；这会漏掉交易极密集或历史不可得的老币，不能把已核验池当全市场。
+资金量只计报价币一侧净池余额变化，包含池费影响，不等同用户钱包净收付；价格使用该笔平均交换价，不把CLMM/DLMM储备比例当现价。报价币USD由Jupiter元数据估计，超过120秒未成功更新不能统计；任意报价币须有有效USD信息。地址数量不等于真实人数。时间窗口以本机收到交易时间计，processed数据可能回滚，不是finalized账本。
 
-流量默认20 GB/UTC日上限（TREND_STREAM_GB_PER_DAY），达到后停止接收、持仓记unknown，下一UTC日恢复。这是预算，不是预估实际消耗或完整24小时覆盖承诺。面板展示已用字节；若很快耗尽，应重新设计发现范围，而非悄悄放开预算。
+## 研究买卖规则
 
-## 安装
+- 每池连续连接预热6分钟。最近60秒量达到10,000/20,000 USD两档，且达到之前5分钟平均每分钟量的3倍；基线排除当前分钟。
+- 60秒净买为正、10秒净买为正、至少5笔交易、3个买家地址。
+- 比较直接突破前5分钟高点，或突破后回到突破位±1%、再站上突破位的回踩入场。预选有效3分钟。
+- 2档量×2种入场×2种退出，共8个独立组。每笔0.05 SOL；组间不合并为组合收益。
+- 信号至少等待500ms，随后取得新的Jupiter报价并重新检查资格、最新资金流。使用报价minimum-out作为保守模拟数量，原始整数不转浮点；入场冲击上限2%。Jupiter路由内费用不再重复加1%池费。另假设每边网络成本0.000305 SOL，未模拟真实成交、账户租金和拥堵排队。
+- 净价值盈利20%激活/峰值回撤8%，或盈利40%激活/回撤12%。无固定止盈、固定亏损百分比止损、最长持仓。
+- 跌破冻结突破位3%且30秒净卖压也触发退出。信号至少500ms后取得新卖出报价才完成模拟平仓。
+- 默认每2秒请求持仓报价；相同币、相同数量的同时请求共享一次响应。行情或有效报价缺口超过15秒、断线、重启记unknown，不能把未知当0或用旧价虚构成交。无报价不是已确认无法卖出。
+- 候选过龄/FDV刷新失效停止新入场；已持有模拟仓的池订阅保留至退出或结果未知。
 
-Node.js≥22；`npm ci --prefix helius`；复制`helius/.env.example`并填写Helius key。`npm start`，`npm test`。没有实盘开关。
+阈值为研究初值，尚无盈利证明。报价不保证将来真实成交。日志按策略版本隔离，新旧收益不能混合比较。
 
-服务器目录`/opt/dump-sniper`；`sudo bash deploy/install.sh`同步新程序（删除已移除的旧代码，保留.env/.cos.env/data）。首次迁移必须先停旧进程、确认链上仓位/待确认交易处理完成，再按用户授权清理旧数据，不能在运行中删账本。
+## 预算与运行
 
-`dump-sniper`采集；`dump-sniper-dashboard`面板8787（外部监听需至少24位访问令牌）；`dump-sniper-upload.timer`北京时间07:00归档及15分钟补偿检查。先测试再重启服务。
+默认20个候选池，另保留未退出研究仓池；最多40个独立研究仓。Dex请求最多30次/分钟、Jupiter共享预算120次/分钟、Helius RPC 6次/分钟。达到报价预算可能导致缺失结果，面板/日志记录跳过，不能据已知结果推断总体收益。
 
-## 新数据与归档
+流量上限默认20GB/UTC日，达到后停止接收并将持仓记unknown，下一个UTC日才重试。这是硬预算，不是预计消耗。实际省多少应观察定向订阅后的字节速率；热点池仍可能很大。
 
-`helius/data/trend-YYYY-MM-DD.jsonl`、`trend-state.json`、`dashboard.json`。事件包含session/sol_usd/migration_evidence/pool_window/shortlist/watch_swap/entry_signal/shadow_entry/exit_signal/shadow_exit/shadow_unknown/coverage_gap。
+Node.js≥22；`npm ci --prefix helius`，填写`helius/.env`中的Helius和Jupiter key。`npm test`；`npm start`。不存在实盘开关。`DRY_RUN=false`等旧环境项无效。
 
-每日导出最近完整北京时间07:00–07:00窗口的`analysis.jsonl.gz`及`summary.json`，含按研究组收益、未知原因、文件SHA256。模拟入场和退出记录携带关联ID、成本、冻结突破位和时间，跨日结果可与前日信号关联。上游行情缺失不能被文件哈希完整性掩盖。
+`sudo bash deploy/install.sh`同步程序，保留`.env/.cos.env/data`。安装脚本不自动启动采集。当前用户要求暂停，部署后保持dump-sniper停止，待明确恢复再启动；dashboard可单独重启。面板8787，外网访问需要原有访问令牌。
 
-COS仍使用原bucket/region凭据，新前缀`old-pool-momentum/daily/YYYY-MM-DD/`；上传后核验长度与SHA256元数据。`npm run export --prefix helius`仅本地导出最近完整窗口。
+## 数据与归档
 
-Dashboard不执行交易、不增加Helius请求，展示预选/持仓/采集质量/最近500事件分页，合约可跳转GMGN。完整研究盈亏按组在summary中，不把不同组混成一项实盘利润。
+日志`helius/data/trend-YYYY-MM-DD.jsonl`包含发现资格、预选前历史、入场/退出信号、报价、模拟结果、unknown和预算统计。`trend-state.json`持久化发现目录；重启不恢复未完成模拟仓，不沿用预热历史。
+
+北京时间每天07:00上传前24小时`analysis.jsonl.gz`、`summary.json`到原COS bucket的新策略前缀`old-pool-momentum/daily/`。summary按策略版本及研究组分别汇总，并提供SHA256；旧版本新策略数据保留，不删除。完整性验证不代表行情无缺口。
